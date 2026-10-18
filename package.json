@@ -1,0 +1,48 @@
+{
+  "name": "otel-bullmq-signoz-tracing",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start:api": "OTEL_SERVICE_NAME=order-api npx tsx --import ./src/instrumentation.ts src/server.ts",
+    "start:worker": "OTEL_SERVICE_NAME=order-worker WORKER_CONCURRENCY=5 npx tsx --import ./src/instrumentation.ts src/worker.ts",
+    "start:worker:constrained": "OTEL_SERVICE_NAME=order-worker WORKER_CONCURRENCY=1 npx tsx --import ./src/instrumentation.ts src/worker.ts",
+    "scenarios": "npx tsx scripts/run-scenarios.ts",
+    "test": "OTEL_SERVICE_NAME=test-runner npx tsx --import ./src/instrumentation.ts --test --test-force-exit tests/*.test.ts",
+    "experiment": "OTEL_SERVICE_NAME=order-worker npx tsx --import ./src/instrumentation.ts scripts/run-experiment.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Hunter-debug00/otel-bullmq-signoz-tracing.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/Hunter-debug00/otel-bullmq-signoz-tracing/issues"
+  },
+  "homepage": "https://github.com/Hunter-debug00/otel-bullmq-signoz-tracing#readme",
+  "dependencies": {
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/auto-instrumentations-node": "^0.81.0",
+    "@opentelemetry/exporter-metrics-otlp-http": "^0.223.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.223.0",
+    "@opentelemetry/resources": "^2.12.0",
+    "@opentelemetry/sdk-metrics": "^2.12.0",
+    "@opentelemetry/sdk-node": "^0.223.0",
+    "@opentelemetry/semantic-conventions": "^1.43.0",
+    "bullmq": "^6.3.15",
+    "bullmq-otel": "^2.0.1",
+    "express": "^5.3.0",
+    "ioredis": "^6.0.0"
+  },
+  "devDependencies": {
+    "@opentelemetry/context-async-hooks": "^3.0.0",
+    "@opentelemetry/sdk-trace-base": "^2.12.0",
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.6.5",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}
