@@ -1,58 +1,157 @@
-# BullMQ OpenTelemetry Tracing & Diagnostics
+# BullMQ + OpenTelemetry Distributed Tracing & Diagnostics
 
-Asynchronous job processing pipeline instrumented with OpenTelemetry traces and metrics for SigNoz. Differentiates in-worker execution duration from queue latency and retry backoff delays using `job_age_at_attempt_ms`.
+A reproducible reference implementation demonstrating OpenTelemetry distributed tracing and custom queue-latency instrumentation with **BullMQ**, **Redis 7**, and **SigNoz**.
 
-## Prerequisites
+This repository highlights a critical observability distinction in asynchronous queues: the difference between in-worker processing execution (`bullmq.job.duration` / `processor_elapsed_ms`) and total queue backlog latency (`job_age_at_attempt_ms`).
 
-- Node.js >= 20
-- Docker & Docker Compose
-- SigNoz collector (listening on OTLP HTTP port 4318) or compatible OTLP endpoint
+---
 
-## Setup
+## Architecture Overview
 
-```bash
-npm install
-cp .env.example .env
-docker compose up -d
+```text
+[HTTP Client / Benchmark]
+          │
+          ▼ POST /jobs
+   [Express API Server] ──(bullmq-otel traceparent)──► [Redis 7 Queue]
+          │                                                  │
+          │                                                  ▼
+          │                                           [Worker Service]
+          ▼ OTLP HTTP                                        │ OTLP HTTP
+   [SigNoz Collector (:4318)] ◄──────────────────────────────┘
 ```
 
-## Running Services
+1. **Producer (`src/server.ts`)**: Validates enqueue payloads, injects W3C trace context (`traceparent`) into job metadata via `bullmq-otel`, and enqueues batches atomically using `diagnosticsQueue.addBulk()`.
+2. **Broker (Redis 7)**: Manages FIFO queue states, job payload persistence, and retry delays.
+3. **Consumer (`src/worker.ts` & `src/jobs/processor.ts`)**: Polls jobs, extracts trace context, records the custom `job_age_at_attempt_ms` metric, decorates both parent and child spans, and runs the scenario work.
+4. **Telemetry (`src/instrumentation.ts`)**: Exports OTLP traces (`/v1/traces`) and metrics (`/v1/metrics`) to SigNoz (local or Cloud).
 
-Start the Express API producer:
+---
+
+## Core Telemetry Semantics
+
+| Metric / Timer | Type & Scope | What It Measures | What It Does NOT Measure |
+| :--- | :--- | :--- | :--- |
+| **`job_age_at_attempt_ms`** | Custom OTel Histogram (`src/telemetry/job-age.ts`) | Elapsed wall-clock time from initial enqueue (`job.timestamp`) to processing start (`job.processedOn`). | Does not measure worker workload execution duration; does not isolate individual backoff intervals on retries. |
+| **`bullmq.job.duration`** | Built-in OTel Histogram (`bullmq-otel`) | Worker processing runtime from processor function invocation to resolution/rejection. | Does not capture queue waiting backlog, scheduling delays, or retry sleep intervals. |
+| **`processor_elapsed_ms`** | Local High-Resolution Timer (`performance.now()`) | Exact in-process benchmark execution timer around `processDiagnosticJob`. | Is not an exported OTel histogram; does not reflect OTLP bucket quantile estimations. |
+
+### Semantic Precision Notes
+- **First Attempts vs Retries (`bullmq.job.attempt_type`)**:
+  - `first_attempt`: Approximates **initial queue waiting time** only for immediately eligible jobs. For delayed jobs, it includes the intentional scheduling delay.
+  - `retry_attempt`: Represents **cumulative elapsed wall-clock age** across all previous execution attempts, failures, and backoff wait intervals. It does not measure only the most recent backoff sleep.
+- **Wall-Clock Timestamps & Clock Skew**:
+  - `job_age_at_attempt_ms` is calculated as $\text{job.processedOn} - \text{job.timestamp}$.
+  - Because producer and worker machines may experience NTP drift, negative clock skew (`processedOn < timestamp`) is explicitly intercepted, logged with a diagnostic warning, and clamped to `0` before recording.
+
+---
+
+## Clean-Clone Quickstart
+
+### 1. Prerequisites
+- **Node.js**: `v24.21.0` (see [`.nvmrc`](.nvmrc))
+- **Docker & Docker Compose**
+
+### 2. Installation & Configuration
+
+```bash
+# 1. Install pinned dependencies
+npm ci
+
+# 2. Configure environment
+cp .env.example .env
+```
+
+Review `.env`:
+- **Local SigNoz**: Leave `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318`.
+- **SigNoz Cloud**: Set your cloud ingestion endpoint and token:
+  ```bash
+  OTEL_EXPORTER_OTLP_ENDPOINT=https://ingest.us.signoz.cloud:443
+  OTEL_EXPORTER_OTLP_HEADERS=signoz-access-token=your-token-here
+  ```
+
+### 3. Start Redis
+
+```bash
+docker compose up -d redis
+```
+
+Verify Redis connectivity:
+```bash
+docker compose ps
+```
+
+### 4. Start the Application
+
+In Terminal 1, start the API producer:
 ```bash
 npm run start:api
 ```
 
-Start the BullMQ worker:
+In Terminal 2, start the worker:
 ```bash
 npm run start:worker
 ```
+*(To test constrained single-concurrency queueing, run `npm run start:worker:constrained`)*
 
-Run worker with constrained concurrency (`concurrency=1`):
-```bash
-npm run start:worker:constrained
-```
+### 5. Trigger Scenarios
 
-## Testing & Benchmarks
-
-Run test suite:
-```bash
-npm test
-```
-
-Trigger diagnostic test scenarios against a running API:
+In Terminal 3, dispatch diagnostic scenarios (`success`, `transient-retry`, `exhausted-failure`, `slow-worker`, and backlog burst):
 ```bash
 npm run scenarios
 ```
 
-Execute the controlled concurrency experiment (outputs metrics to `results/experiment-results.csv`):
+### 6. Run Tests & Validation
+
+```bash
+# Typecheck source, scripts, and tests
+npm run typecheck
+
+# Run unit and integration tests (exits cleanly without force-exit)
+npm test
+
+# Build production bundle
+npm run build
+```
+
+---
+
+## Controlled Synchronized Burst Experiment
+
+Run the isolated benchmark comparing baseline concurrency ($c=5$) against constrained concurrency ($c=1$):
+
 ```bash
 npm run experiment
 ```
 
-### Benchmark Summary (20 Jobs × 100ms Work, 5 Trials Each)
+### Benchmark Methodology
+- **Controlled Burst**: Each trial pauses the worker, atomically enqueues a batch of 20 jobs ($100\text{ ms}$ simulated async work each), attaches listeners, and resumes the worker.
+- **Alternating Trial Order**: Trials alternate condition order ($c=5$ then $c=1$, then $c=1$ then $c=5$) across unique trial queues (`diag-c5-trial-01`, `diag-c1-trial-01`, etc.) to mitigate host warming bias.
+- **Percentiles**: Computed via the deterministic `"nearest-rank"` sample convention.
 
-| Queue / Condition | Concurrency | Batch Enqueue (Mean) | Processing Duration P50 / P95 | Job Age at Attempt P50 / P95 |
-| :--- | :--- | :--- | :--- | :--- |
-| `diagnostics-baseline-c5` | `5` | `21.13 ms` | `100.86 ms` / `104.78 ms` | **`140.0 ms` / `350.4 ms`** |
-| `diagnostics-constrained-c1` | `1` | `17.03 ms` | `100.43 ms` / `101.37 ms` | **`946.2 ms` / `1,875.8 ms`** |
+### Benchmark Results (5 Trials Baseline $c=5$ vs 5 Trials Constrained $c=1$)
+
+| Condition | Concurrency | Enqueue Batch Latency (Mean) | In-Worker Elapsed Duration P50 / P95 (Median) | Enqueue-to-Attempt Age P50 / P95 (Median) |
+| :--- | :---: | :---: | :---: | :---: |
+| **Baseline (`diag-c5-trial-*`)** | **5** | **`7.18 ms`** | **`100.6 ms` / `102.2 ms`** | **`121 ms` / `327 ms`** |
+| **Constrained (`diag-c1-trial-*`)** | **1** | **`7.90 ms`** | **`100.2 ms` / `101.1 ms`** | **`930 ms` / `1,855 ms`** |
+
+> [!NOTE]
+> While worker execution duration (`processor_elapsed_ms`) remained constant at $\approx 100\text{ ms}$ under both conditions, `job_age_at_attempt_ms` P95 jumped from **`327 ms`** under concurrency 5 to **`1,855 ms`** under constrained concurrency 1 due to head-of-line queue backlog.
+
+Generated artifacts:
+- [`results/sample-job-observations.csv`](results/sample-job-observations.csv): 200 per-job observations (`condition`, `queue_name`, `concurrency`, `trial`, `job_id`, `attempt_number`, `enqueue_to_attempt_age_ms`, `processor_elapsed_ms`).
+- [`results/sample-trial-summary.csv`](results/sample-trial-summary.csv): 10 trial summaries with P50 and P95 statistics.
+- [`results/sample-manifest.json`](results/sample-manifest.json): Machine, OS, dependency versions, and workload metadata.
+
+---
+
+## Additional Documentation
+
+- [**Architecture & Telemetry Signals**](docs/architecture.md): Deep-dive into trace context propagation and metric aggregation advice.
+- [**Troubleshooting & Codespaces/DinD**](docs/TROUBLESHOOTING.md): GitHub Codespaces port-forwarding, Docker-in-Docker networking, and collector connectivity.
+
+---
+
+## License
+
+[ISC](LICENSE)

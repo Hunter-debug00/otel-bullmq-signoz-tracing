@@ -1,0 +1,11 @@
+condition,queue_name,concurrency,trial,jobs_submitted,jobs_completed,enqueue_batch_ms,enqueue_to_attempt_age_p50_ms,enqueue_to_attempt_age_p95_ms,processor_elapsed_p50_ms,processor_elapsed_p95_ms
+baseline_concurrency_5,diag-c5-trial-01,5,1,20,20,16.9,139,351,101.49,103.32
+constrained_concurrency_1,diag-c1-trial-01,1,1,20,20,6.57,930,1855,100.22,101.08
+constrained_concurrency_1,diag-c1-trial-02,1,2,20,20,5.44,930,1851,100.26,101.28
+baseline_concurrency_5,diag-c5-trial-02,5,2,20,20,5.86,126,331,100.94,102.78
+baseline_concurrency_5,diag-c5-trial-03,5,3,20,20,6.2,121,324,100.19,102.17
+constrained_concurrency_1,diag-c1-trial-03,1,3,20,20,18.48,954,1873,100.22,100.88
+constrained_concurrency_1,diag-c1-trial-04,1,4,20,20,5.85,925,1843,100.21,100.78
+baseline_concurrency_5,diag-c5-trial-04,5,4,20,20,2.79,112,317,100.23,100.82
+baseline_concurrency_5,diag-c5-trial-05,5,5,20,20,4.15,119,327,100.6,101.15
+constrained_concurrency_1,diag-c1-trial-05,1,5,20,20,3.15,935,1858,100.26,102.65

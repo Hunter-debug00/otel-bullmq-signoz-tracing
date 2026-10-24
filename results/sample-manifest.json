@@ -1,0 +1,18 @@
+{
+  "timestamp": "2026-10-24T20:34:57.351Z",
+  "nodeVersion": "v24.21.0",
+  "osArch": "linux-x64",
+  "cpuCount": 2,
+  "workload": {
+    "type": "simulated-asynchronous-work",
+    "jobCountPerTrial": 20,
+    "simulatedWorkMs": 100
+  },
+  "percentileMethod": "nearest-rank",
+  "dependencies": {
+    "bullmq": "^6.3.15",
+    "bullmqOtel": "^2.0.1",
+    "ioredis": "^6.0.0",
+    "otelSdkNode": "^0.223.0"
+  }
+}

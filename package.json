@@ -1,21 +1,32 @@
 {
   "name": "otel-bullmq-signoz-tracing",
   "version": "1.0.0",
-  "description": "",
+  "description": "BullMQ OpenTelemetry instrumentation demonstrating enqueue-to-attempt job age metrics and distributed tracing in SigNoz",
   "main": "index.js",
   "scripts": {
+    "build": "tsc -p tsconfig.json",
     "start:api": "OTEL_SERVICE_NAME=order-api npx tsx --import ./src/instrumentation.ts src/server.ts",
     "start:worker": "OTEL_SERVICE_NAME=order-worker WORKER_CONCURRENCY=5 npx tsx --import ./src/instrumentation.ts src/worker.ts",
     "start:worker:constrained": "OTEL_SERVICE_NAME=order-worker WORKER_CONCURRENCY=1 npx tsx --import ./src/instrumentation.ts src/worker.ts",
     "scenarios": "npx tsx scripts/run-scenarios.ts",
-    "test": "OTEL_SERVICE_NAME=test-runner npx tsx --import ./src/instrumentation.ts --test --test-force-exit tests/*.test.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.check.json",
+    "test": "OTEL_SERVICE_NAME=test-runner npx tsx --import ./src/instrumentation.ts --test tests/*.test.ts",
     "experiment": "OTEL_SERVICE_NAME=order-worker npx tsx --import ./src/instrumentation.ts scripts/run-experiment.ts"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Hunter-debug00/otel-bullmq-signoz-tracing.git"
   },
-  "keywords": [],
+  "keywords": [
+    "bullmq",
+    "opentelemetry",
+    "signoz",
+    "tracing",
+    "metrics",
+    "redis",
+    "distributed-tracing",
+    "observability"
+  ],
   "author": "",
   "license": "ISC",
   "type": "commonjs",

@@ -147,3 +147,7 @@ vite.config.ts.timestamp-*
 
 # Turbo Repo
 .turbo
+
+# Plan files
+REPO_FIX_PLAN.md
+repo_fix_plan.md
