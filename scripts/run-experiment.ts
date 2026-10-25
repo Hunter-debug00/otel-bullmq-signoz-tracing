@@ -119,16 +119,24 @@ async function runSingleTrial(
     await worker.resume();
     const completedResults = await Promise.all(completionPromises);
 
-    const observations: JobObservation[] = completedResults.map((c) => ({
-      condition,
-      queue_name: queueName,
-      concurrency,
-      trial: trialNumber,
-      job_id: c.jobId,
-      attempt_number: c.result.attemptNumber,
-      enqueue_to_attempt_age_ms: c.result.enqueueToAttemptAgeMs ?? 0,
-      processor_elapsed_ms: c.result.processorElapsedMs,
-    }));
+    const observations: JobObservation[] = completedResults.map((c) => {
+      const ageMs = c.result.enqueueToAttemptAgeMs;
+      if (ageMs === null || !Number.isFinite(ageMs) || ageMs < 0) {
+        throw new Error(
+          `Invalid enqueue-to-attempt age for job ${c.jobId}; refusing to record a synthetic measurement.`
+        );
+      }
+      return {
+        condition,
+        queue_name: queueName,
+        concurrency,
+        trial: trialNumber,
+        job_id: c.jobId,
+        attempt_number: c.result.attemptNumber,
+        enqueue_to_attempt_age_ms: ageMs,
+        processor_elapsed_ms: c.result.processorElapsedMs,
+      };
+    });
 
     const ageValues = observations.map((o) => o.enqueue_to_attempt_age_ms);
     const elapsedValues = observations.map((o) => o.processor_elapsed_ms);
