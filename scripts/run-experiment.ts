@@ -256,12 +256,27 @@ async function main() {
   fs.writeFileSync(summaryPath, summaryHeader + summaryRows + '\n', 'utf8');
   console.log(`[OK] Saved trial summary to: ${summaryPath}`);
 
-  let packageJson: Record<string, unknown> = {};
-  try {
-    const pkgContent = fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8');
-    packageJson = JSON.parse(pkgContent);
-  } catch (err) {
-    console.warn('[Experiment] Could not read package.json for manifest:', err);
+  function getResolvedVersion(packageName: string): string {
+    try {
+      const lockPath = path.join(process.cwd(), 'package-lock.json');
+      if (fs.existsSync(lockPath)) {
+        const lock = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+        const pkgEntry = lock.packages?.[`node_modules/${packageName}`];
+        if (pkgEntry?.version) {
+          return pkgEntry.version;
+        }
+      }
+    } catch {
+      // Fall through to require fallback
+    }
+    try {
+      const pkgJsonPath = require.resolve(`${packageName}/package.json`);
+      const pkg = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf8'));
+      if (pkg.version) return pkg.version;
+    } catch {
+      // Fall through to unknown
+    }
+    return 'unknown';
   }
 
   const manifest = {
@@ -276,14 +291,10 @@ async function main() {
     },
     percentileMethod: 'nearest-rank',
     dependencies: {
-      bullmq: (packageJson.dependencies as Record<string, string>)?.bullmq ?? 'unknown',
-      bullmqOtel: (packageJson.dependencies as Record<string, string>)?.[
-        'bullmq-otel'
-      ] ?? 'unknown',
-      ioredis: (packageJson.dependencies as Record<string, string>)?.ioredis ?? 'unknown',
-      otelSdkNode: (packageJson.dependencies as Record<string, string>)?.[
-        '@opentelemetry/sdk-node'
-      ] ?? 'unknown',
+      bullmq: getResolvedVersion('bullmq'),
+      bullmqOtel: getResolvedVersion('bullmq-otel'),
+      ioredis: getResolvedVersion('ioredis'),
+      otelSdkNode: getResolvedVersion('@opentelemetry/sdk-node'),
     },
   };
   const manifestPath = path.join(resultsDir, 'sample-manifest.json');

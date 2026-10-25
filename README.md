@@ -20,10 +20,10 @@ This repository highlights a critical observability distinction in asynchronous 
    [SigNoz Collector (:4318)] ◄──────────────────────────────┘
 ```
 
-1. **Producer (`src/server.ts`)**: Validates enqueue payloads, injects W3C trace context (`traceparent`) into job metadata via `bullmq-otel`, and enqueues batches atomically using `diagnosticsQueue.addBulk()`.
+1. **Producer (`src/app.ts` & `src/server.ts`)**: `src/app.ts` defines routes, validates enqueue payloads, injects W3C trace context (`traceparent`) into job metadata via `bullmq-otel`, and enqueues batches atomically using `getDiagnosticsQueue().addBulk()`. `src/server.ts` handles network listener startup and process signal handling.
 2. **Broker (Redis 7)**: Manages FIFO queue states, job payload persistence, and retry delays.
 3. **Consumer (`src/worker.ts` & `src/jobs/processor.ts`)**: Polls jobs, extracts trace context, records the custom `job_age_at_attempt_ms` metric, decorates both parent and child spans, and runs the scenario work.
-4. **Telemetry (`src/instrumentation.ts`)**: Exports OTLP traces (`/v1/traces`) and metrics (`/v1/metrics`) to SigNoz (local or Cloud).
+4. **Telemetry (`src/instrumentation.ts` & `src/bootstrap.ts`)**: `src/instrumentation.ts` constructs the OpenTelemetry SDK with OTLP trace (`/v1/traces`) and metric (`/v1/metrics`) HTTP exporters, while `src/bootstrap.ts` initializes telemetry for running services via `--import ./src/bootstrap.ts`.
 
 ---
 
@@ -135,11 +135,11 @@ npm run experiment
 
 | Condition | Concurrency | Enqueue Batch Latency (Mean) | In-Worker Elapsed Duration P50 / P95 (Median) | Enqueue-to-Attempt Age P50 / P95 (Median) |
 | :--- | :---: | :---: | :---: | :---: |
-| **Baseline (`diag-c5-trial-*`)** | **5** | **`6.92 ms`** | **`100.7 ms` / `102.4 ms`** | **`116 ms` / `324 ms`** |
-| **Constrained (`diag-c1-trial-*`)** | **1** | **`8.38 ms`** | **`100.2 ms` / `100.9 ms`** | **`938 ms` / `1,859 ms`** |
+| **Baseline (`diag-c5-trial-*`)** | **5** | **`6.53 ms`** | **`100.6 ms` / `101.6 ms`** | **`118 ms` / `328 ms`** |
+| **Constrained (`diag-c1-trial-*`)** | **1** | **`3.93 ms`** | **`100.3 ms` / `100.9 ms`** | **`923 ms` / `1,844 ms`** |
 
 > [!NOTE]
-> While worker execution duration (`processor_elapsed_ms`) remained constant at $\approx 100\text{ ms}$ under both conditions, `job_age_at_attempt_ms` P95 jumped from **`324 ms`** under concurrency 5 to **`1,859 ms`** under constrained concurrency 1 due to head-of-line queue backlog.
+> While worker execution duration (`processor_elapsed_ms`) remained constant at $\approx 100\text{ ms}$ under both conditions, `job_age_at_attempt_ms` P95 jumped from **`328 ms`** under concurrency 5 to **`1,844 ms`** under constrained concurrency 1 due to head-of-line queue backlog.
 
 Generated artifacts:
 - [`results/sample-job-observations.csv`](results/sample-job-observations.csv): 200 per-job observations (`condition`, `queue_name`, `concurrency`, `trial`, `job_id`, `attempt_number`, `enqueue_to_attempt_age_ms`, `processor_elapsed_ms`).

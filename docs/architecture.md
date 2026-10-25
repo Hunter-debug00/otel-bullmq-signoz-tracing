@@ -18,10 +18,10 @@ This document details the queue processing lifecycle, OpenTelemetry instrumentat
    [SigNoz Collector (:4318)] ◄──────────────────────────────┘
 ```
 
-1. **Producer (`src/server.ts`)**: Accepts batch job enqueue requests, validates the schema and parameters via `validateEnqueueRequest()`, injects the active W3C trace context into BullMQ job metadata using `bullmq-otel`, and atomically enqueues jobs via `diagnosticsQueue.addBulk()`.
+1. **Producer (`src/app.ts` & `src/server.ts`)**: `src/app.ts` accepts batch job enqueue requests, validates the schema and parameters via `validateEnqueueRequest()`, injects the active W3C trace context into BullMQ job metadata using `bullmq-otel`, and atomically enqueues jobs via `getDiagnosticsQueue().addBulk()`. `src/server.ts` manages HTTP port listening and graceful shutdown.
 2. **Message Broker (Redis 7)**: Persists queues, hash sets, and delayed/retry zsets with blocking command support (`maxRetriesPerRequest: null`).
 3. **Consumer (`src/worker.ts` & `src/jobs/processor.ts`)**: Worker processes poll Redis, extract parent trace context from incoming jobs, record the custom enqueue-to-attempt age metric (`job_age_at_attempt_ms`), annotate active parent and child spans, and execute the scenario workload.
-4. **Telemetry Collector (SigNoz)**: Ingests OTLP HTTP traces (`/v1/traces`) and metrics (`/v1/metrics`) over port `4318` or via SigNoz Cloud with bearer token headers.
+4. **Telemetry Collector (SigNoz)**: Ingests OTLP HTTP traces (`/v1/traces`) and metrics (`/v1/metrics`) over port `4318` or via SigNoz Cloud with `signoz-ingestion-key` headers. Telemetry is constructed by `src/instrumentation.ts` and preloaded for services via `src/bootstrap.ts`.
 
 ---
 
@@ -72,5 +72,5 @@ When a client sends a request to the Express API:
 4. The worker attaches diagnostic attributes (`bullmq.job.name`, `bullmq.job.attempt_number`, `bullmq.job.age_at_attempt_ms`, `app.run_id`) to **both** the active parent consumer span and the child scenario span (`execute_scenario.${scenario}`).
 
 ### Root Span vs Asynchronous Waterfall Duration
-- The root HTTP producer span completes and ends as soon as `queue.addBulk()` finishes and the HTTP 202 response is sent (< 30 ms).
+- The root HTTP producer span completes and ends as soon as `getDiagnosticsQueue().addBulk()` finishes and the HTTP 202 response is sent (< 30 ms).
 - The worker executes asynchronously in the background. While the overall trace waterfall in SigNoz encompasses the subsequent worker job spans, the root HTTP span itself remains short, accurately reflecting the non-blocking nature of the producer.

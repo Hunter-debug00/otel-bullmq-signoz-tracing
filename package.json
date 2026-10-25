@@ -2,7 +2,7 @@
   "name": "otel-bullmq-signoz-tracing",
   "version": "1.0.0",
   "description": "BullMQ OpenTelemetry instrumentation demonstrating enqueue-to-attempt job age metrics and distributed tracing in SigNoz",
-  "main": "index.js",
+  "private": true,
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "start:api": "OTEL_SERVICE_NAME=order-api npx tsx --import ./src/bootstrap.ts src/server.ts",
@@ -27,7 +27,6 @@
     "distributed-tracing",
     "observability"
   ],
-  "author": "",
   "license": "ISC",
   "type": "commonjs",
   "bugs": {
