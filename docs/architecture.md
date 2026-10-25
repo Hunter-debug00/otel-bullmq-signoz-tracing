@@ -74,3 +74,53 @@ When a client sends a request to the Express API:
 ### Root Span vs Asynchronous Waterfall Duration
 - The root HTTP producer span completes and ends as soon as `getDiagnosticsQueue().addBulk()` finishes and the HTTP 202 response is sent (< 30 ms).
 - The worker executes asynchronously in the background. While the overall trace waterfall in SigNoz encompasses the subsequent worker job spans, the root HTTP span itself remains short, accurately reflecting the non-blocking nature of the producer.
+
+---
+
+## 4. Visualizing in SigNoz (Query Recipes & Trace Explorer)
+
+### SigNoz Dashboard Queries (PromQL Mode)
+
+You can visualize both the custom `job_age_at_attempt_ms` metric and the built-in `bullmq.job.duration` metric in custom SigNoz dashboards:
+
+#### 1. P95 & P50 Queue Backlog Delay (Enqueue-to-Attempt Age)
+```promql
+# P95 Wall-Clock Queue Delay across all queues
+histogram_quantile(0.95, sum(rate(job_age_at_attempt_ms_bucket[5m])) by (le))
+
+# P50 Wall-Clock Queue Delay across all queues
+histogram_quantile(0.50, sum(rate(job_age_at_attempt_ms_bucket[5m])) by (le))
+```
+
+#### 2. Worker Execution Duration vs Queue Delay
+Compare in-worker execution duration against queue delay to immediately pinpoint whether latency stems from worker concurrency starvation or slow task execution:
+```promql
+# P95 Workload Execution Duration (built-in bullmq-otel histogram)
+histogram_quantile(0.95, sum(rate(bullmq_job_duration_bucket[5m])) by (le))
+```
+
+#### 3. Job Processing Rate by Scenario
+```promql
+# Rate of jobs processed per second by scenario
+sum(rate(job_age_at_attempt_ms_count[1m])) by (bullmq_job_name)
+```
+
+#### 4. Retry vs First-Attempt Distribution
+```promql
+# Track retry frequency compared to initial attempts
+sum(rate(job_age_at_attempt_ms_count[5m])) by (bullmq_job_attempt_type)
+```
+
+### SigNoz Trace Explorer Filters
+
+To inspect traces for specific queue behaviors in the SigNoz Trace Explorer:
+
+1. **Find High-Backlog Jobs**:
+   - Filter: `serviceName = order-worker` AND `bullmq.job.age_at_attempt_ms > 500`
+   - Highlights traces where jobs waited in the queue for more than 500ms before a worker picked them up.
+2. **Find Retried Jobs**:
+   - Filter: `serviceName = order-worker` AND `bullmq.job.attempt_number > 1`
+   - Inspect the retry trace waterfalls and backoff delays.
+3. **Isolate Exhausted Failures**:
+   - Filter: `serviceName = order-worker` AND `responseStatusCode = ERROR`
+   - Inspect the `execute_scenario.exhausted-failure` span and its recorded `exception` event attributes.

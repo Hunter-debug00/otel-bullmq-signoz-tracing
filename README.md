@@ -150,7 +150,7 @@ Generated artifacts:
 
 ## Additional Documentation
 
-- [**Architecture & Telemetry Signals**](docs/architecture.md): Deep-dive into trace context propagation and metric aggregation advice.
+- [**Architecture & Telemetry Signals**](docs/architecture.md): Deep-dive into trace context propagation, metric aggregation advice, and ready-to-use SigNoz PromQL dashboard queries & Trace Explorer filters.
 - [**Troubleshooting & Codespaces/DinD**](docs/TROUBLESHOOTING.md): GitHub Codespaces port-forwarding, Docker-in-Docker networking, and collector connectivity.
 
 ---
