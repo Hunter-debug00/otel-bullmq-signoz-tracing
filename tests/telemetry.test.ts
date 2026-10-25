@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { Job } from 'bullmq';
+import { Histogram } from '@opentelemetry/api';
 import {
   calculateEnqueueToAttemptAgeMs,
   recordJobAgeAtAttempt,
@@ -132,9 +133,21 @@ describe('recordJobAgeAtAttempt', () => {
       data: { scenario: 'malicious-cardinality-injection' },
     } as unknown as Job;
 
-    const res = recordJobAgeAtAttempt(fakeJob);
+    let recordedValue: number | null = null;
+    let recordedAttributes: Record<string, unknown> | null = null;
+    const mockHistogram = {
+      record: (val: number, attrs: Record<string, unknown>) => {
+        recordedValue = val;
+        recordedAttributes = attrs;
+      },
+    } as unknown as Histogram;
+
+    const res = recordJobAgeAtAttempt(fakeJob, undefined, mockHistogram);
     assert.equal(res.recorded, true);
     assert.equal(res.ageMs, 200);
+    assert.equal(recordedValue, 200);
+    assert.equal(recordedAttributes?.['bullmq.job.name'], 'unknown');
+    assert.equal(recordedAttributes?.['bullmq.job.attempt_type'], 'first_attempt');
   });
 });
 

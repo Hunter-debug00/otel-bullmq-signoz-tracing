@@ -1,126 +1,166 @@
-# Telemetry & Queue Architecture
+# Architecture & Telemetry Design
 
-This document details the queue processing lifecycle, OpenTelemetry instrumentation signals, measurement semantics, and distributed trace propagation across the producer and worker pipeline.
+This document details the system design, signal definitions, distributed tracing flow, and SigNoz query recipes for monitoring BullMQ with OpenTelemetry.
 
 ---
 
-## 1. System Architecture
+## System Architecture
 
 ```text
 [HTTP Client / Benchmark]
           │
           ▼ POST /jobs
-   [Express API Server] ──(bullmq-otel traceparent)──► [Redis 7 Queue]
-          │                                                  │
-          │                                                  ▼
-          │                                           [Worker Service]
-          ▼ OTLP HTTP                                        │ OTLP HTTP
-   [SigNoz Collector (:4318)] ◄──────────────────────────────┘
+   [Express API Server] ──(traceparent in job options)──► [Redis 7.4 Queue]
+          │                                                       │
+          │                                                       ▼
+          │                                                [Worker Service]
+          ▼ OTLP/HTTP                                             │ OTLP/HTTP
+   [SigNoz Collector (:4318)] ◄───────────────────────────────────┘
 ```
 
-1. **Producer (`src/app.ts` & `src/server.ts`)**: `src/app.ts` accepts batch job enqueue requests, validates the schema and parameters via `validateEnqueueRequest()`, injects the active W3C trace context into BullMQ job metadata using `bullmq-otel`, and atomically enqueues jobs via `getDiagnosticsQueue().addBulk()`. `src/server.ts` manages HTTP port listening and graceful shutdown.
-2. **Message Broker (Redis 7)**: Persists queues, hash sets, and delayed/retry zsets with blocking command support (`maxRetriesPerRequest: null`).
-3. **Consumer (`src/worker.ts` & `src/jobs/processor.ts`)**: Worker processes poll Redis, extract parent trace context from incoming jobs, record the custom enqueue-to-attempt age metric (`job_age_at_attempt_ms`), annotate active parent and child spans, and execute the scenario workload.
-4. **Telemetry Collector (SigNoz)**: Ingests OTLP HTTP traces (`/v1/traces`) and metrics (`/v1/metrics`) over port `4318` or via SigNoz Cloud with `signoz-ingestion-key` headers. Telemetry is constructed by `src/instrumentation.ts` and preloaded for services via `src/bootstrap.ts`.
+1. **Producer (`order-api`)**: An Express service (`src/app.ts`, `src/server.ts`) that validates incoming requests, injects the active W3C trace context (`traceparent`) into BullMQ job metadata using `bullmq-otel`, and enqueues jobs in bulk with `getDiagnosticsQueue().addBulk()`.
+2. **Message Broker (Redis 7.4)**: Manages job queues, hash states, and retry zsets.
+3. **Consumer (`order-worker`)**: A BullMQ worker (`src/worker.ts`, `src/jobs/processor.ts`) that dequeues jobs, extracts the producer trace context, records the wall-clock queue age metric (`job_age_at_attempt_ms`), adds diagnostic attributes to active spans, and executes the scenario task.
+4. **Telemetry Collector (SigNoz)**: Ingests OTLP traces (`/v1/traces`) and metrics (`/v1/metrics`) over HTTP. The OpenTelemetry SDK is initialized via `src/bootstrap.ts` before application code runs.
 
 ---
 
-## 2. Measurement Definitions & Metric Semantics
+## Signal Definitions
 
-Understanding the differences between durations is critical for accurate diagnosis:
+Standard queue metrics like `bullmq.job.duration` only measure how long a worker spends executing a job handler. They do not capture how long jobs spend waiting in Redis before processing starts.
 
 ```text
 Timeline of a Job Attempt:
 
-├── Job Enqueued (`job.timestamp`)
+├── Enqueued in Redis (`job.timestamp`)
 │
-│   ◄─────── [ Queue Wait Backlog / Delay / Retries ] ───────►
+│   ◄─────── [ Queue Wait / Scheduling Delay / Retry Backoff ] ───────►
 │
-├── Processing Starts (`job.processedOn`) ── [Record `job_age_at_attempt_ms`]
+├── Attempt Starts (`job.processedOn`) ──── [Record `job_age_at_attempt_ms`]
 │   │
-│   │   ◄── In-Worker Workload Execution ──►
+│   │   ◄── In-Worker Execution ──►
 │   │
-└── Processing Completes ─────────────────── [Record `processor_elapsed_ms` & `bullmq.job.duration`]
+└── Attempt Completes ───────────────────── [Record `bullmq.job.duration`]
 ```
 
-| Metric / Value | Source & Scope | What It Measures | What It Does NOT Measure |
+| Signal | Source | What It Measures | What It Does Not Measure |
 | :--- | :--- | :--- | :--- |
-| **`job_age_at_attempt_ms`** | Custom OTel Histogram (`src/telemetry/job-age.ts`) | Elapsed wall-clock time from initial job enqueue (`job.timestamp`) to processing start (`job.processedOn`). | Does not measure worker processing runtime; does not isolate individual backoff intervals on retries. |
-| **`bullmq.job.duration`** | Built-in BullMQ OTel Histogram (`bullmq-otel`) | Internal processor function runtime from start to resolution/rejection. | Does not capture queue waiting backlog, scheduling delays, or retry intervals. |
-| **`processor_elapsed_ms`** | Local High-Resolution Benchmark Measurement (`performance.now()`) | Precise timer around `processDiagnosticJob` within the local process. | Is not an OpenTelemetry histogram aggregation; does not reflect OTLP bucket approximations. |
+| `job_age_at_attempt_ms` | Custom OTel Histogram (`src/telemetry/job-age.ts`) | Elapsed wall-clock time from enqueue (`job.timestamp`) to attempt start (`job.processedOn`). | Handler execution duration; does not isolate individual backoff intervals on retries. |
+| `bullmq.job.duration` | Built-in OTel Histogram (`bullmq-otel`) | Worker processor function runtime from start to resolution/rejection. | Queue wait time, scheduling delays, or retry intervals. |
+| `processor_elapsed_ms` | Local timer (`performance.now()`) | Process-local handler duration, written to benchmark CSV results. | Not exported to SigNoz; unaggregated timer for benchmark validation. |
 
-### Critical Semantic Notes:
+### First Attempts vs. Retries
 
-1. **First Attempts vs Retries (`bullmq.job.attempt_type`)**:
-   - On `first_attempt`, `job_age_at_attempt_ms` approximates **initial queue waiting time** only for immediately eligible jobs. For delayed/scheduled jobs, it includes the intentional delay interval.
-   - On `retry_attempt`, `job_age_at_attempt_ms` represents **cumulative elapsed wall-clock age** across all previous execution attempts, failures, and backoff wait intervals. It does **not** isolate only the most recent backoff sleep.
+The histogram attaches a `bullmq.job.attempt_type` label with two possible values:
+- `first_attempt`: Measures initial queue wait time for immediate jobs. For delayed jobs, this includes the intentional scheduling delay.
+- `retry_attempt`: Measures cumulative wall-clock time from original enqueue across all previous attempts and backoff periods.
 
-2. **Wall-Clock & Clock Skew Assumptions**:
-   - `job_age_at_attempt_ms` calculates $\text{job.processedOn} - \text{job.timestamp}$.
-   - Because `timestamp` is recorded by the producer machine and `processedOn` is recorded by the worker machine, system clock drift (NTP skew) across separate physical hosts can affect readings.
-   - Negative skew (`processedOn < timestamp`) is explicitly intercepted: the histogram observation is skipped rather than clamped to 0, and a rate-limited warning is logged to maintain metric data integrity.
+### Clock Skew
 
----
+BullMQ records `job.timestamp` on the producer machine and `job.processedOn` on the worker machine. If host clocks drift:
+- Negative skew (`processedOn < timestamp`) is dropped rather than clamped to zero, avoiding artificial zero-millisecond spikes in metric distributions.
+- A rate-limited warning is logged once per minute when skew or missing timestamps occur.
 
-## 3. Distributed Tracing & Span Hierarchy
+### Cardinality Control
 
-### Span Context Propagation
-When a client sends a request to the Express API:
-1. Express auto-instrumentation creates the root HTTP server span (`POST /jobs`).
-2. BullMQ-OTel attaches the active W3C trace context (`traceparent`) into the BullMQ job's `opts.telemetry` metadata.
-3. When the worker picks up the job, BullMQ instrumentation extracts the traceparent and creates the consumer parent span.
-4. The worker attaches diagnostic attributes (`bullmq.job.name`, `bullmq.job.attempt_number`, `bullmq.job.age_at_attempt_ms`, `app.run_id`) to **both** the active parent consumer span and the child scenario span (`execute_scenario.${scenario}`).
-
-### Root Span vs Asynchronous Waterfall Duration
-- The root HTTP producer span completes and ends as soon as `getDiagnosticsQueue().addBulk()` finishes and the HTTP 202 response is sent (< 30 ms).
-- The worker executes asynchronously in the background. While the overall trace waterfall in SigNoz encompasses the subsequent worker job spans, the root HTTP span itself remains short, accurately reflecting the non-blocking nature of the producer.
+To keep metrics efficient in SigNoz / ClickHouse:
+- `bullmq.job.name` is restricted to known scenario names. Unrecognized names fall back to `'unknown'`.
+- High-cardinality identifiers (`job.id`, `run_id`) are attached exclusively to trace spans, never to metric dimensions.
+- `bullmq.queue.name` is included as a label. If your system generates dynamic per-tenant queue names, remove this label to prevent label explosion.
 
 ---
 
-## 4. Visualizing in SigNoz (Query Recipes & Trace Explorer)
+## Distributed Tracing Flow
 
-### SigNoz Dashboard Queries (PromQL Mode)
+Each request produces a connected distributed trace across both services:
 
-You can visualize both the custom `job_age_at_attempt_ms` metric and the built-in `bullmq.job.duration` metric in custom SigNoz dashboards:
-
-#### 1. P95 & P50 Queue Backlog Delay (Enqueue-to-Attempt Age)
-```promql
-# P95 Wall-Clock Queue Delay across all queues
-histogram_quantile(0.95, sum(rate(job_age_at_attempt_ms_bucket[5m])) by (le))
-
-# P50 Wall-Clock Queue Delay across all queues
-histogram_quantile(0.50, sum(rate(job_age_at_attempt_ms_bucket[5m])) by (le))
+```text
+POST /jobs                          (order-api, Express HTTP span)
+└─ addBulk diagnostics-job-queue    (order-api, bullmq-otel producer span)
+   └─ process diagnostics-job-queue (order-worker, bullmq-otel consumer span)
+      └─ execute_scenario.<name>    (order-worker, child scenario span)
 ```
 
-#### 2. Worker Execution Duration vs Queue Delay
-Compare in-worker execution duration against queue delay to immediately pinpoint whether latency stems from worker concurrency starvation or slow task execution:
+- **Trace Context Propagation**: `bullmq-otel` injects the W3C `traceparent` into job metadata. The worker extracts this context, continuing the trace across process boundaries.
+- **Root Span Duration**: The producer HTTP span ends as soon as the batch is committed to Redis and the HTTP 202 response is returned. It finishes quickly (typically a few milliseconds after initial connection warmup), while the worker continues asynchronously.
+- **Diagnostic Span Attributes**: Both the consumer span and the child scenario span include:
+  - `bullmq.job.name`: scenario identifier
+  - `bullmq.job.attempt_number`: attempt count (1, 2, 3...)
+  - `bullmq.job.age_at_attempt_ms`: recorded queue age (omitted if dropped due to clock skew)
+  - `app.run_id`: batch identifier
+
+---
+
+## Visualizing in SigNoz
+
+SigNoz stores OpenTelemetry metrics using PromQL with quotes and curly braces for dotted metric and label names.
+
+### Dashboard Queries (PromQL)
+
+#### 1. P95 & P50 Queue Backlog Age
+Plotting queue age highlights when workers are backlogged:
+
 ```promql
-# P95 Workload Execution Duration (built-in bullmq-otel histogram)
-histogram_quantile(0.95, sum(rate(bullmq_job_duration_bucket[5m])) by (le))
+# P95 Queue wait latency
+histogram_quantile(0.95, sum by (le) (rate({"job_age_at_attempt_ms.bucket"}[5m])))
+
+# P50 Queue wait latency
+histogram_quantile(0.50, sum by (le) (rate({"job_age_at_attempt_ms.bucket"}[5m])))
 ```
 
-#### 3. Job Processing Rate by Scenario
+#### 2. Handler Execution Duration vs. Queue Wait Age
+Put these two queries on the same dashboard panel:
+
 ```promql
-# Rate of jobs processed per second by scenario
-sum(rate(job_age_at_attempt_ms_count[1m])) by (bullmq_job_name)
+# P95 Handler execution duration (bullmq-otel)
+histogram_quantile(0.95, sum by (le) (rate({"bullmq.job.duration.bucket"}[5m])))
+
+# P95 Queue wait age
+histogram_quantile(0.95, sum by (le) (rate({"job_age_at_attempt_ms.bucket"}[5m])))
 ```
 
-#### 4. Retry vs First-Attempt Distribution
+- **If queue age rises while execution duration stays flat**: The worker pool has reached concurrency saturation. Jobs are queuing up waiting for available worker slots. Scale out worker concurrency or instances.
+- **If execution duration rises**: Downstream dependencies or job handlers are slow.
+
+#### 3. Attempt Throughput by Scenario
+Because `job_age_at_attempt_ms` is recorded at the start of each attempt, this query measures total attempt throughput:
+
 ```promql
-# Track retry frequency compared to initial attempts
-sum(rate(job_age_at_attempt_ms_count[5m])) by (bullmq_job_attempt_type)
+sum by ("bullmq.job.name") (rate({"job_age_at_attempt_ms.count"}[5m]))
 ```
 
-### SigNoz Trace Explorer Filters
+*Note: To measure only initial job executions (excluding retries), filter by `{"bullmq.job.attempt_type" = "first_attempt"}`.*
 
-To inspect traces for specific queue behaviors in the SigNoz Trace Explorer:
+#### 4. Retry vs. First-Attempt Distribution
+Track how often retries occur relative to first attempts:
 
-1. **Find High-Backlog Jobs**:
-   - Filter: `serviceName = order-worker` AND `bullmq.job.age_at_attempt_ms > 500`
-   - Highlights traces where jobs waited in the queue for more than 500ms before a worker picked them up.
-2. **Find Retried Jobs**:
-   - Filter: `serviceName = order-worker` AND `bullmq.job.attempt_number > 1`
-   - Inspect the retry trace waterfalls and backoff delays.
-3. **Isolate Exhausted Failures**:
-   - Filter: `serviceName = order-worker` AND `responseStatusCode = ERROR`
-   - Inspect the `execute_scenario.exhausted-failure` span and its recorded `exception` event attributes.
+```promql
+sum by ("bullmq.job.attempt_type") (rate({"job_age_at_attempt_ms.count"}[5m]))
+```
+
+---
+
+### Trace Explorer Filters
+
+In the SigNoz Trace Explorer, filter spans to investigate anomalies:
+
+1. **Find high-backlog jobs** (queued for > 500 ms):
+   ```text
+   service.name = 'order-worker' AND bullmq.job.age_at_attempt_ms > 500
+   ```
+2. **Find retried attempts**:
+   ```text
+   service.name = 'order-worker' AND bullmq.job.attempt_number > 1
+   ```
+3. **Isolate failed attempts**:
+   ```text
+   service.name = 'order-worker' AND has_error = true
+   ```
+
+---
+
+## Architectural Limits & Operational Notes
+
+- **Observer Bias**: `job_age_at_attempt_ms` is recorded when a worker picks up a job. If all workers crash or are paused, jobs sit in Redis unobserved until a worker recovers. To alert on stalled queues when workers are offline, monitor BullMQ queue counts (`bullmq.queue.jobs`).
+- **NTP Synchronization**: Host clock accuracy determines the precision of wall-clock age calculations. In multi-host production environments, ensure all instances run synchronized NTP/Chrony daemons.
+- **Payload Limits**: The Express API enforces a 16 KB body limit (`express.json({ limit: '16kb' })`) and returns `413 Payload Too Large` if exceeded.

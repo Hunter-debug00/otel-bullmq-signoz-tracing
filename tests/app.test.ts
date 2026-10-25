@@ -100,4 +100,22 @@ describe('Express HTTP App Routes (src/app.ts)', () => {
     assert.equal(body.code, 'MALFORMED_JSON');
     assert.equal(body.error, 'Malformed JSON payload');
   });
+
+  it('POST /jobs returns 413 PAYLOAD_TOO_LARGE when body exceeds size limit', async () => {
+    const largePayload = JSON.stringify({
+      scenario: 'success',
+      padding: 'x'.repeat(20 * 1024),
+    });
+
+    const res = await fetch(`${baseUrl}/jobs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: largePayload,
+    });
+
+    assert.equal(res.status, 413);
+    const body = await res.json();
+    assert.equal(body.code, 'PAYLOAD_TOO_LARGE');
+    assert.equal(body.error, 'Payload too large');
+  });
 });

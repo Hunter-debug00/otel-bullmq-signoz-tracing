@@ -14,9 +14,6 @@ export interface DiagnosticJobResult {
   attemptNumber: number;
   enqueueToAttemptAgeMs: number | null;
   processorElapsedMs: number;
-  // Aliases preserved for backwards compatibility
-  jobAgeMs?: number | null;
-  executionDurationMs?: number;
   traceId?: string;
 }
 
@@ -90,8 +87,6 @@ export async function processDiagnosticJob(
         attemptNumber,
         enqueueToAttemptAgeMs,
         processorElapsedMs,
-        jobAgeMs: enqueueToAttemptAgeMs,
-        executionDurationMs: processorElapsedMs,
         traceId,
       };
       return result;

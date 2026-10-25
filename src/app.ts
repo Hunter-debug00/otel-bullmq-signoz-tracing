@@ -83,6 +83,19 @@ export function createApp(): Express {
       });
     }
 
+    if (
+      err &&
+      typeof err === 'object' &&
+      (('type' in err && (err as { type?: unknown }).type === 'entity.too.large') ||
+        ('status' in err && (err as { status?: unknown }).status === 413) ||
+        ('statusCode' in err && (err as { statusCode?: unknown }).statusCode === 413))
+    ) {
+      return res.status(413).json({
+        error: 'Payload too large',
+        code: 'PAYLOAD_TOO_LARGE',
+      });
+    }
+
     const errMessage = err instanceof Error ? err.message : String(err);
     console.error('[API] Server error occurred:', errMessage);
 

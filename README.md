@@ -1,157 +1,190 @@
-# BullMQ + OpenTelemetry Distributed Tracing & Diagnostics
+# BullMQ Distributed Tracing & Job Age Telemetry with SigNoz
 
-A reproducible reference implementation demonstrating OpenTelemetry distributed tracing and custom queue-latency instrumentation with **BullMQ**, **Redis 7**, and **SigNoz**.
+In asynchronous queues, a worker pool can appear healthy while jobs sit waiting in Redis for seconds. The standard `bullmq.job.duration` metric only starts when a worker begins executing the job handler, so it completely misses queue waiting time.
 
-This repository highlights a critical observability distinction in asynchronous queues: the difference between in-worker processing execution (`bullmq.job.duration` / `processor_elapsed_ms`) and total queue backlog latency (`job_age_at_attempt_ms`).
-
----
-
-## Architecture Overview
-
-```text
-[HTTP Client / Benchmark]
-          │
-          ▼ POST /jobs
-   [Express API Server] ──(bullmq-otel traceparent)──► [Redis 7 Queue]
-          │                                                  │
-          │                                                  ▼
-          │                                           [Worker Service]
-          ▼ OTLP HTTP                                        │ OTLP HTTP
-   [SigNoz Collector (:4318)] ◄──────────────────────────────┘
-```
-
-1. **Producer (`src/app.ts` & `src/server.ts`)**: `src/app.ts` defines routes, validates enqueue payloads, injects W3C trace context (`traceparent`) into job metadata via `bullmq-otel`, and enqueues batches atomically using `getDiagnosticsQueue().addBulk()`. `src/server.ts` handles network listener startup and process signal handling.
-2. **Broker (Redis 7)**: Manages FIFO queue states, job payload persistence, and retry delays.
-3. **Consumer (`src/worker.ts` & `src/jobs/processor.ts`)**: Polls jobs, extracts trace context, records the custom `job_age_at_attempt_ms` metric, decorates both parent and child spans, and runs the scenario work.
-4. **Telemetry (`src/instrumentation.ts` & `src/bootstrap.ts`)**: `src/instrumentation.ts` constructs the OpenTelemetry SDK with OTLP trace (`/v1/traces`) and metric (`/v1/metrics`) HTTP exporters, while `src/bootstrap.ts` initializes telemetry for running services via `--import ./src/bootstrap.ts`.
+This repository demonstrates how to instrument BullMQ with OpenTelemetry and export signals to SigNoz over OTLP/HTTP. It adds a custom histogram, `job_age_at_attempt_ms`, to measure the elapsed time from job enqueue to the start of each attempt. Two services (`order-api` and `order-worker`) propagate distributed W3C trace contexts so producer HTTP requests and worker job executions appear in a single trace waterfall.
 
 ---
 
-## Core Telemetry Semantics
+## What the Benchmark Shows
 
-| Metric / Timer | Type & Scope | What It Measures | What It Does NOT Measure |
-| :--- | :--- | :--- | :--- |
-| **`job_age_at_attempt_ms`** | Custom OTel Histogram (`src/telemetry/job-age.ts`) | Elapsed wall-clock time from initial enqueue (`job.timestamp`) to processing start (`job.processedOn`). | Does not measure worker workload execution duration; does not isolate individual backoff intervals on retries. |
-| **`bullmq.job.duration`** | Built-in OTel Histogram (`bullmq-otel`) | Worker processing runtime from processor function invocation to resolution/rejection. | Does not capture queue waiting backlog, scheduling delays, or retry sleep intervals. |
-| **`processor_elapsed_ms`** | Local High-Resolution Timer (`performance.now()`) | Exact in-process benchmark execution timer around `processDiagnosticJob`. | Is not an exported OTel histogram; does not reflect OTLP bucket quantile estimations. |
+The included experiment runs 20 jobs of 100 ms simulated work across two conditions: baseline concurrency ($c=5$) and constrained concurrency ($c=1$). Each condition ran 5 trials on a 2-CPU Linux host using unique queues to avoid cache warming bias:
 
-### Semantic Precision Notes
-- **First Attempts vs Retries (`bullmq.job.attempt_type`)**:
-  - `first_attempt`: Approximates **initial queue waiting time** only for immediately eligible jobs. For delayed jobs, it includes the intentional scheduling delay.
-  - `retry_attempt`: Represents **cumulative elapsed wall-clock age** across all previous execution attempts, failures, and backoff wait intervals. It does not measure only the most recent backoff sleep.
-- **Wall-Clock Timestamps & Clock Skew**:
-  - `job_age_at_attempt_ms` is calculated as $\text{job.processedOn} - \text{job.timestamp}$.
-  - When `job.processedOn` is missing/invalid or produces negative clock skew ($\text{job.processedOn} < \text{job.timestamp}$ due to node NTP drift), the histogram observation is explicitly **skipped** rather than fabricated or clamped to `0`, and a rate-limited diagnostic warning is logged to maintain metric data integrity.
+| Worker Concurrency | Processing Duration (P50 / P95) | Queue Wait Age (P50 / P95) |
+| :---: | :---: | :---: |
+| **5 (Baseline)** | 100.6 ms / 101.6 ms | **118 ms / 328 ms** |
+| **1 (Constrained)** | 100.3 ms / 100.9 ms | **923 ms / 1,844 ms** |
 
-> [!NOTE]
-> **Operational Note on Label Cardinality & Security**: `job_age_at_attempt_ms` bounds `bullmq.job.name` via a four-value allowlist (`ALLOWED_SCENARIOS`) and excludes high-cardinality identifiers (`job.id`, `run_id`). It retains `bullmq.queue.name` under the architectural assumption that queue names are static and operationally bounded; deployments that dynamically create per-tenant queues should omit `bullmq.queue.name` from metric attributes. Finally, the Express API in this repository is an unauthenticated local diagnostic harness and is not hardened for direct public internet exposure.
+### Key Takeaway
+Processing duration remains constant at approximately 100 ms under both conditions. However, under constrained concurrency, P95 queue wait age jumps from 328 ms to 1,844 ms because the 20th job must wait for the 19 jobs before it ($20 \times 100\text{ ms} \approx 2\text{ s}$). 
+
+A monitoring dashboard that only plots `bullmq.job.duration` would show healthy 100 ms execution times while users experience multi-second delays. Plotting `job_age_at_attempt_ms` reveals the queue backlog immediately.
 
 ---
 
-## Clean-Clone Quickstart
+## Quickstart
 
-### 1. Prerequisites
-- **Node.js**: `v24.21.0` (see [`.nvmrc`](.nvmrc))
-- **Docker & Docker Compose**
+### Prerequisites
+- **Node.js**: `24.21.0` (see [`.nvmrc`](.nvmrc))
+- **Docker**: For running Redis
+- **SigNoz**: Either [SigNoz Cloud](https://signoz.io/docs/ingestion/signoz-cloud/overview/) or a [local Docker installation](https://signoz.io/docs/install/docker/)
 
-### 2. Installation & Configuration
+### 1. Setup Environment & Redis
 
 ```bash
-# 1. Install pinned dependencies
+# Clone and install dependencies
 npm ci
 
-# 2. Configure environment
+# Configure environment
 cp .env.example .env
-```
 
-Review `.env`:
-- **Local SigNoz**: Leave `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318`.
-- **SigNoz Cloud**: Set your cloud regional ingestion endpoint and ingestion key:
-  ```bash
-  OTEL_EXPORTER_OTLP_ENDPOINT=https://ingest.<region>.signoz.cloud:443
-  OTEL_EXPORTER_OTLP_HEADERS=signoz-ingestion-key=<your-signoz-ingestion-key>
-  ```
-
-### 3. Start Redis
-
-```bash
+# Start Redis 7.4
 docker compose up -d redis
 ```
 
-Verify Redis connectivity:
+Local SigNoz accepts OTLP on `http://localhost:4318` by default. For SigNoz Cloud, update `.env` with your regional ingestion endpoint and ingestion key:
+
 ```bash
-docker compose ps
+OTEL_EXPORTER_OTLP_ENDPOINT=https://ingest.<region>.signoz.cloud:443
+OTEL_EXPORTER_OTLP_HEADERS=signoz-ingestion-key=<your-signoz-ingestion-key>
 ```
 
-### 4. Start the Application
+### 2. Start the Services
 
-In Terminal 1, start the API producer:
+In terminal 1, start the API producer:
 ```bash
 npm run start:api
 ```
 
-In Terminal 2, start the worker:
+In terminal 2, start the BullMQ worker (concurrency 5 by default):
 ```bash
 npm run start:worker
 ```
-*(To test constrained single-concurrency queueing, run `npm run start:worker:constrained`)*
 
-### 5. Trigger Scenarios
+### 3. Dispatch Scenarios
 
-In Terminal 3, dispatch diagnostic scenarios (`success`, `transient-retry`, `exhausted-failure`, `slow-worker`, and backlog burst):
+In terminal 3, run the scenario runner:
 ```bash
 npm run scenarios
 ```
 
-### 6. Run Tests & Validation
+This sends five diagnostic scenarios:
+1. `success`: standard 100 ms job completing on attempt 1.
+2. `transient-retry`: fails attempt 1, retries with exponential backoff, and succeeds on attempt 2.
+3. `exhausted-failure`: fails all 3 attempts, marking the span with status `ERROR` and attaching exception events.
+4. `slow-worker`: simulated slow handler (2,000 ms).
+5. Backlog burst: batch of 20 concurrent jobs demonstrating queue wait latency.
 
-```bash
-# Typecheck source, scripts, and tests
-npm run typecheck
+### 4. Inspect in SigNoz
 
-# Run unit and integration tests (exits cleanly without force-exit)
-npm test
-
-# Build production bundle
-npm run build
-```
+In SigNoz:
+- **Services**: You should see two active services: `order-api` and `order-worker`.
+- **Trace Waterfall**: Clicking into a trace shows the root `POST /jobs` HTTP span from `order-api` linked to the worker's `process diagnostics-job-queue` and `execute_scenario.*` spans.
+- **Dashboards**: See [docs/architecture.md](docs/architecture.md) for PromQL queries comparing `bullmq.job.duration` with `job_age_at_attempt_ms`.
 
 ---
 
-## Controlled Synchronized Burst Experiment
+## Running the Benchmark Experiment
 
-Run the isolated benchmark comparing baseline concurrency ($c=5$) against constrained concurrency ($c=1$):
+To reproduce the benchmark numbers:
 
 ```bash
 npm run experiment
 ```
 
-### Benchmark Methodology
-- **Controlled Burst**: Each trial pauses the worker, atomically enqueues a batch of 20 jobs ($100\text{ ms}$ simulated async work each), attaches listeners, and resumes the worker.
-- **Alternating Trial Order**: Trials alternate condition order ($c=5$ then $c=1$, then $c=1$ then $c=5$) across unique trial queues (`diag-c5-trial-01`, `diag-c1-trial-01`, etc.) to mitigate host warming bias.
-- **Percentiles**: Computed via the deterministic `"nearest-rank"` sample convention.
+The experiment script pauses workers, atomically enqueues batches of 20 jobs, resumes processing, and measures percentiles using the nearest-rank method across alternating $c=5$ and $c=1$ trials.
 
-### Benchmark Results (5 Trials Baseline $c=5$ vs 5 Trials Constrained $c=1$)
+Execution takes ~30 seconds and updates three files in `results/`:
+- `results/sample-job-observations.csv`: Individual measurements for all 200 jobs.
+- `results/sample-trial-summary.csv`: Summary statistics per trial.
+- `results/sample-manifest.json`: Node runtime, dependency versions, and workload configuration.
 
-| Condition | Concurrency | Enqueue Batch Latency (Mean) | In-Worker Elapsed Duration P50 / P95 (Median) | Enqueue-to-Attempt Age P50 / P95 (Median) |
-| :--- | :---: | :---: | :---: | :---: |
-| **Baseline (`diag-c5-trial-*`)** | **5** | **`6.53 ms`** | **`100.6 ms` / `101.6 ms`** | **`118 ms` / `328 ms`** |
-| **Constrained (`diag-c1-trial-*`)** | **1** | **`3.93 ms`** | **`100.3 ms` / `100.9 ms`** | **`923 ms` / `1,844 ms`** |
-
-> [!NOTE]
-> While worker execution duration (`processor_elapsed_ms`) remained constant at $\approx 100\text{ ms}$ under both conditions, `job_age_at_attempt_ms` P95 jumped from **`328 ms`** under concurrency 5 to **`1,844 ms`** under constrained concurrency 1 due to head-of-line queue backlog.
-
-Generated artifacts:
-- [`results/sample-job-observations.csv`](results/sample-job-observations.csv): 200 per-job observations (`condition`, `queue_name`, `concurrency`, `trial`, `job_id`, `attempt_number`, `enqueue_to_attempt_age_ms`, `processor_elapsed_ms`).
-- [`results/sample-trial-summary.csv`](results/sample-trial-summary.csv): 10 trial summaries with P50 and P95 statistics.
-- [`results/sample-manifest.json`](results/sample-manifest.json): Machine, OS, dependency versions, and workload metadata.
+*Note: Running the experiment updates the local files in `results/`. Restore original sample files with `git checkout results/`.*
 
 ---
 
-## Additional Documentation
+## Sending Custom Jobs via HTTP
 
-- [**Architecture & Telemetry Signals**](docs/architecture.md): Deep-dive into trace context propagation, metric aggregation advice, and ready-to-use SigNoz PromQL dashboard queries & Trace Explorer filters.
-- [**Troubleshooting & Codespaces/DinD**](docs/TROUBLESHOOTING.md): GitHub Codespaces port-forwarding, Docker-in-Docker networking, and collector connectivity.
+You can enqueue jobs directly against `order-api`:
+
+```bash
+curl -X POST http://localhost:3000/jobs \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "scenario": "success",
+    "count": 5,
+    "simulatedWorkMs": 100,
+    "backoffDelayMs": 1500
+  }'
+```
+
+The API responds with HTTP `202 Accepted` and the created job IDs:
+
+```json
+{
+  "status": "enqueued",
+  "runId": "run_1792955500000",
+  "scenario": "success",
+  "count": 5,
+  "jobIds": ["1", "2", "3", "4", "5"]
+}
+```
+
+### Request Parameters
+
+| Field | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `scenario` | string | `'success'` | One of `'success'`, `'transient-retry'`, `'exhausted-failure'`, or `'slow-worker'`. |
+| `count` | integer (1–100) | `1` | Number of jobs to enqueue in bulk. |
+| `simulatedWorkMs` | integer (1–10,000) | `100` (`2000` for slow-worker) | Simulated task processing time. |
+| `backoffDelayMs` | integer (1–60,000) | `1500` | Base delay for exponential retry backoff. |
+| `runId` | string (max 128 chars) | `run_<timestamp>` | Grouping identifier attached to spans. |
+
+Payloads larger than 16 KB return `413 Payload Too Large`.
+
+---
+
+## Configuration
+
+All configuration is managed via environment variables (or `.env`):
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `PORT` | `3000` | Express API listener port. |
+| `HOST` | `0.0.0.0` | API bind address. |
+| `REDIS_URL` | `redis://localhost:6379` | Redis connection URL. |
+| `WORKER_CONCURRENCY` | `5` | BullMQ worker concurrency (1–50). |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4318` | Base URL for OTLP/HTTP export. |
+| `OTEL_EXPORTER_OTLP_HEADERS` | *empty* | Comma-separated headers (e.g. `signoz-ingestion-key=...`). |
+| `OTEL_EXPORTER_OTLP_TIMEOUT` | `5000` | Exporter timeout in ms before dropping telemetry on shutdown. |
+
+---
+
+## Testing & Verification
+
+```bash
+# Typecheck source, scripts, and tests
+npm run typecheck
+
+# Run test suite (requires Redis on localhost:6379)
+npm test
+
+# Compile TypeScript
+npm run build
+```
+
+The test suite covers:
+- Express route validation, error handling, and 413 oversized body protection.
+- Wall-clock age calculation, retry accumulation, and negative clock skew detection.
+- Distributed W3C trace propagation from producer to consumer.
+- OTLP HTTP trace and metric export pipeline verification.
+
+---
+
+## Documentation
+
+- [**Architecture & Telemetry Design**](docs/architecture.md): Trace context flow, metric cardinality controls, and ready-to-use SigNoz PromQL queries and Trace Explorer filters.
+- [**Troubleshooting**](docs/TROUBLESHOOTING.md): Redis connectivity, SigNoz Cloud setup, and collector timeout diagnostics.
 
 ---
 

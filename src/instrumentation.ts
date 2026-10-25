@@ -50,6 +50,7 @@ export interface CreateTelemetrySdkOptions {
   otlpEndpoint?: string;
   otlpHeaders?: Record<string, string>;
   metricExportIntervalMillis?: number;
+  timeoutMillis?: number;
   /**
    * Intentional test-only override (e.g. for in-memory span assertions in tests).
    * In @opentelemetry/sdk-node 0.223.0, providing spanProcessors takes precedence
@@ -66,15 +67,22 @@ export function createTelemetrySdk(options: CreateTelemetrySdkOptions = {}): Nod
   );
   const headers =
     options.otlpHeaders ?? parseOtlpHeaders(process.env.OTEL_EXPORTER_OTLP_HEADERS);
+  const timeoutMillis =
+    options.timeoutMillis ??
+    (process.env.OTEL_EXPORTER_OTLP_TIMEOUT
+      ? Number(process.env.OTEL_EXPORTER_OTLP_TIMEOUT)
+      : 5000);
 
   const traceExporter = new OTLPTraceExporter({
     url: `${baseUrl}/v1/traces`,
     headers,
+    timeoutMillis,
   });
 
   const metricExporter = new OTLPMetricExporter({
     url: `${baseUrl}/v1/metrics`,
     headers,
+    timeoutMillis,
   });
 
   const metricReader = new PeriodicExportingMetricReader({
@@ -133,8 +141,18 @@ export async function shutdownTelemetry(customSdk?: NodeSDK): Promise<void> {
       await sdk.shutdown();
       console.log(`[OTel] Telemetry shut down successfully for service: ${serviceName}`);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes('ECONNREFUSED')) {
+      const errObj = err && typeof err === 'object' ? (err as Record<string, unknown>) : null;
+      const isConnRefused =
+        errObj?.code === 'ECONNREFUSED' ||
+        (err instanceof AggregateError &&
+          err.errors.some((subErr: unknown) =>
+            subErr && typeof subErr === 'object'
+              ? (subErr as { code?: string }).code === 'ECONNREFUSED' || String(subErr).includes('ECONNREFUSED')
+              : false
+          )) ||
+        (err instanceof Error ? err.message : String(err)).includes('ECONNREFUSED');
+
+      if (isConnRefused) {
         console.warn(`[OTel] Collector unreachable at ${otlpBaseUrl}. Telemetry shut down.`);
       } else {
         console.error(`[OTel] Error shutting down telemetry:`, err);

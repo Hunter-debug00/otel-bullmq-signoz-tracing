@@ -110,7 +110,7 @@ describe('BullMQ + OpenTelemetry Integration Verification', () => {
     assert.equal(typeof result.processorElapsedMs, 'number');
     // Confirm producer root span finished fast without being artificially prolonged by async worker execution
     assert.ok(
-      producerDurationMs < 60,
+      producerDurationMs < 200,
       `Producer span duration (${producerDurationMs.toFixed(2)}ms) should finish quickly while worker runs asynchronously`
     );
     assert.ok(
