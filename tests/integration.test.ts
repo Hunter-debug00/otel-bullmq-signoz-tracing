@@ -20,11 +20,8 @@ import {
   recordJobAgeAtAttempt,
   JOB_AGE_BUCKET_BOUNDARIES,
 } from '../src/telemetry/job-age';
-import {
-  shutdownTelemetry,
-  inMemorySpanExporter,
-  spanProcessor,
-} from '../src/instrumentation';
+import { SimpleSpanProcessor, InMemorySpanExporter } from '@opentelemetry/sdk-trace-base';
+import { createTelemetrySdk } from '../src/instrumentation';
 
 const TEST_QUEUE_NAME = 'integration-test-queue';
 
@@ -33,6 +30,13 @@ describe('BullMQ + OpenTelemetry Integration Verification', () => {
   let worker: Worker<DiagnosticJobData, DiagnosticJobResult>;
   let queueEvents: QueueEvents;
 
+  const inMemorySpanExporter = new InMemorySpanExporter();
+  const spanProcessor = new SimpleSpanProcessor(inMemorySpanExporter);
+  const testSdk = createTelemetrySdk({
+    serviceName: 'test-runner',
+    spanProcessors: [spanProcessor],
+  });
+
   const connections = {
     queue: createRedisConnection(),
     events: createRedisConnection(),
@@ -40,6 +44,8 @@ describe('BullMQ + OpenTelemetry Integration Verification', () => {
   };
 
   before(async () => {
+    testSdk.start();
+
     const telemetry = new BullMQOtel({ tracerName: 'test-tracer', enableMetrics: false });
 
     queue = new Queue(TEST_QUEUE_NAME, {
@@ -76,7 +82,7 @@ describe('BullMQ + OpenTelemetry Integration Verification', () => {
       connections.events.quit(),
       connections.worker.quit(),
     ]);
-    await shutdownTelemetry();
+    await testSdk.shutdown();
   });
 
   it('1. propagates producer trace context to the worker span and confirms root producer span remains short', async () => {

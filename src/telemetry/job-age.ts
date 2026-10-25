@@ -21,15 +21,28 @@ export function createJobAgeHistogram(targetMeter: Meter = meter): Histogram {
 
 export const jobAgeHistogram = createJobAgeHistogram(meter);
 
-/**
- * Pure function to calculate enqueue-to-attempt age in milliseconds.
- * Throws on missing or non-finite timestamps.
- * Warns on negative clock skew (processedOn < enqueueTimestamp) and clamps at 0.
- */
+const lastWarningTimestampByReason = new Map<string, number>();
+const WARNING_COOLDOWN_MS = 60_000;
+
+function warnRateLimited(reason: string, message: string): void {
+  const now = Date.now();
+  const lastWarned = lastWarningTimestampByReason.get(reason) ?? 0;
+  if (now - lastWarned >= WARNING_COOLDOWN_MS) {
+    lastWarningTimestampByReason.set(reason, now);
+    console.warn(`[Telemetry] ${message}`);
+  }
+}
+
+export interface JobAgeMeasurementResult {
+  recorded: boolean;
+  ageMs: number | null;
+  anomalyReason?: 'missing_processed_on' | 'invalid_enqueue_timestamp' | 'negative_clock_skew';
+}
+
 export function calculateEnqueueToAttemptAgeMs(
   enqueueTimestamp: number,
   processedOnTimestamp: number | undefined
-): number {
+): number | null {
   if (
     typeof enqueueTimestamp !== 'number' ||
     !Number.isFinite(enqueueTimestamp) ||
@@ -47,45 +60,60 @@ export function calculateEnqueueToAttemptAgeMs(
 
   const diff = processedOnTimestamp - enqueueTimestamp;
   if (diff < 0) {
-    console.warn(
-      `[Telemetry] Negative clock skew detected: processedOn (${processedOnTimestamp}) < enqueueTimestamp (${enqueueTimestamp}). Clamping to 0.`
+    warnRateLimited(
+      'negative_clock_skew',
+      `Negative clock skew detected: processedOn (${processedOnTimestamp}) < enqueueTimestamp (${enqueueTimestamp}). Skipping metric recording.`
     );
-    return 0;
+    return null;
   }
 
   return diff;
 }
 
-/**
- * Records enqueue-to-attempt age metric using a validated scenario allowlist to prevent high cardinality.
- */
 export function recordJobAgeAtAttempt(
   job: Job,
   jobName?: string,
   histogram: Histogram = jobAgeHistogram
-): number {
-  const processedOn = job.processedOn ?? Date.now();
-  if (job.processedOn === undefined) {
-    console.warn(
-      `[Telemetry] job.processedOn is missing for job id=${job.id ?? 'unknown'}, using current local timestamp`
+): JobAgeMeasurementResult {
+  if (
+    job.processedOn === undefined ||
+    typeof job.processedOn !== 'number' ||
+    !Number.isFinite(job.processedOn)
+  ) {
+    warnRateLimited(
+      'missing_processed_on',
+      `Skipped job_age_at_attempt_ms observation because job.processedOn is missing or invalid (jobId=${job.id ?? 'unknown'}).`
     );
+    return { recorded: false, ageMs: null, anomalyReason: 'missing_processed_on' };
   }
 
-  const jobAgeMs = calculateEnqueueToAttemptAgeMs(job.timestamp, processedOn);
+  let ageMs: number | null = null;
+  try {
+    ageMs = calculateEnqueueToAttemptAgeMs(job.timestamp, job.processedOn);
+  } catch (err) {
+    warnRateLimited(
+      'invalid_enqueue_timestamp',
+      `Skipped job_age_at_attempt_ms observation due to invalid timestamp: ${err instanceof Error ? err.message : String(err)}`
+    );
+    return { recorded: false, ageMs: null, anomalyReason: 'invalid_enqueue_timestamp' };
+  }
 
-  // Derive scenario from job.data.scenario or provided jobName, enforcing finite allowlist
-  const rawScenario = (job.data as any)?.scenario ?? jobName ?? job.name;
+  if (ageMs === null) {
+    return { recorded: false, ageMs: null, anomalyReason: 'negative_clock_skew' };
+  }
+
+  const rawScenario = (job.data as { scenario?: string })?.scenario ?? jobName ?? job.name;
   const validatedScenario: JobScenario | 'unknown' = ALLOWED_SCENARIOS.includes(
     rawScenario as JobScenario
   )
     ? (rawScenario as JobScenario)
     : 'unknown';
 
-  histogram.record(jobAgeMs, {
+  histogram.record(ageMs, {
     'bullmq.queue.name': job.queueName,
     'bullmq.job.name': validatedScenario,
     'bullmq.job.attempt_type': job.attemptsMade === 0 ? 'first_attempt' : 'retry_attempt',
   });
 
-  return jobAgeMs;
+  return { recorded: true, ageMs };
 }

@@ -12,10 +12,10 @@ export type { JobScenario, DiagnosticJobData };
 export interface DiagnosticJobResult {
   outcome: 'completed' | 'completed_slowly';
   attemptNumber: number;
-  enqueueToAttemptAgeMs: number;
+  enqueueToAttemptAgeMs: number | null;
   processorElapsedMs: number;
   // Aliases preserved for backwards compatibility
-  jobAgeMs?: number;
+  jobAgeMs?: number | null;
   executionDurationMs?: number;
   traceId?: string;
 }
@@ -36,7 +36,6 @@ export async function processDiagnosticJob(
 ): Promise<DiagnosticJobResult> {
   const startPerf = performance.now();
 
-  // Validate job.data at worker boundary
   const validation = validateDiagnosticJobData(job.data);
   if (!validation.success || !validation.data) {
     throw new UnrecoverableError(`Malformed job data: ${validation.error}`);
@@ -45,27 +44,28 @@ export async function processDiagnosticJob(
   const { runId, scenario, simulatedWorkMs } = validation.data;
   const attemptNumber = job.attemptsMade + 1;
 
-  const enqueueToAttemptAgeMs = recordJobAgeAtAttempt(job, scenario);
+  const ageMeasurement = recordJobAgeAtAttempt(job, scenario);
+  const enqueueToAttemptAgeMs = ageMeasurement.ageMs;
 
   const activeSpan = trace.getActiveSpan();
   const traceId = activeSpan?.spanContext().traceId;
 
-  const diagnosticSpanAttributes = {
+  const diagnosticSpanAttributes: Record<string, string | number> = {
     'bullmq.job.name': scenario,
     'bullmq.job.attempt_number': attemptNumber,
-    'bullmq.job.age_at_attempt_ms': enqueueToAttemptAgeMs,
     'app.run_id': runId,
   };
+  if (enqueueToAttemptAgeMs !== null) {
+    diagnosticSpanAttributes['bullmq.job.age_at_attempt_ms'] = enqueueToAttemptAgeMs;
+  }
 
-  // Set attributes on the active parent consumer span
   activeSpan?.setAttributes(diagnosticSpanAttributes);
 
   console.log(
-    `[Worker] jobId=${job.id} runId=${runId} bullmq.job.name=${scenario} attempt=${attemptNumber} enqueueToAttemptAgeMs=${enqueueToAttemptAgeMs}ms`
+    `[Worker] jobId=${job.id} runId=${runId} bullmq.job.name=${scenario} attempt=${attemptNumber} enqueueToAttemptAgeMs=${enqueueToAttemptAgeMs !== null ? `${enqueueToAttemptAgeMs}ms` : 'skipped'}`
   );
 
   return tracer.startActiveSpan(`execute_scenario.${scenario}`, async (span) => {
-    // Set attributes inside the child scenario span as well
     span.setAttributes(diagnosticSpanAttributes);
 
     try {

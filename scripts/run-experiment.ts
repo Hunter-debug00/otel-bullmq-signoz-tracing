@@ -83,14 +83,12 @@ async function runSingleTrial(
       }
     );
 
-    // 1. Await readiness on all three BullMQ components
     await Promise.all([
       queue.waitUntilReady(),
       queueEvents.waitUntilReady(),
       worker.waitUntilReady(),
     ]);
 
-    // 2. Pause worker before enqueueing so jobs are not consumed during enqueueing
     await worker.pause();
 
     const runId = `${condition}_trial_${trialNumber}_${Date.now()}`;
@@ -106,12 +104,10 @@ async function runSingleTrial(
       },
     }));
 
-    // 3. Atomically enqueue the batch using addBulk and record latency
     const enqueueStart = performance.now();
     const jobs = await queue.addBulk(jobPayloads);
     const enqueueBatchMs = Number((performance.now() - enqueueStart).toFixed(2));
 
-    // 4. Attach waitUntilFinished promises before resuming worker
     const completionPromises = jobs.map(async (job, idx) => {
       const result = await job.waitUntilFinished(queueEvents!, 15000);
       return {
@@ -120,7 +116,6 @@ async function runSingleTrial(
       };
     });
 
-    // 5. Resume worker and await all results
     await worker.resume();
     const completedResults = await Promise.all(completionPromises);
 
@@ -131,7 +126,7 @@ async function runSingleTrial(
       trial: trialNumber,
       job_id: c.jobId,
       attempt_number: c.result.attemptNumber,
-      enqueue_to_attempt_age_ms: c.result.enqueueToAttemptAgeMs,
+      enqueue_to_attempt_age_ms: c.result.enqueueToAttemptAgeMs ?? 0,
       processor_elapsed_ms: c.result.processorElapsedMs,
     }));
 
@@ -154,7 +149,6 @@ async function runSingleTrial(
 
     return { summary, observations };
   } finally {
-    // 6. Guarantee orderly cleanup
     await Promise.allSettled([
       worker?.close(),
       queueEvents?.close(),
@@ -238,7 +232,6 @@ async function main() {
   const resultsDir = path.join(process.cwd(), 'results');
   fs.mkdirSync(resultsDir, { recursive: true });
 
-  // 1. Export sample-job-observations.csv
   const obsHeader =
     'condition,queue_name,concurrency,trial,job_id,attempt_number,enqueue_to_attempt_age_ms,processor_elapsed_ms\n';
   const obsRows = allObservations
@@ -251,7 +244,6 @@ async function main() {
   fs.writeFileSync(obsPath, obsHeader + obsRows + '\n', 'utf8');
   console.log(`\n[OK] Saved job observations to: ${obsPath}`);
 
-  // 2. Export sample-trial-summary.csv
   const summaryHeader =
     'condition,queue_name,concurrency,trial,jobs_submitted,jobs_completed,enqueue_batch_ms,enqueue_to_attempt_age_p50_ms,enqueue_to_attempt_age_p95_ms,processor_elapsed_p50_ms,processor_elapsed_p95_ms\n';
   const summaryRows = allSummaries
@@ -264,7 +256,6 @@ async function main() {
   fs.writeFileSync(summaryPath, summaryHeader + summaryRows + '\n', 'utf8');
   console.log(`[OK] Saved trial summary to: ${summaryPath}`);
 
-  // 3. Export sample-manifest.json
   let packageJson: Record<string, unknown> = {};
   try {
     const pkgContent = fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8');

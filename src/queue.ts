@@ -40,24 +40,13 @@ export function getDiagnosticsQueue(): Queue<DiagnosticJobData> {
   return _diagnosticsQueue;
 }
 
-export const queueConnection = new Proxy({} as IORedis, {
-  get(_target, prop) {
-    const conn = getQueueConnection() as any;
-    const value = conn[prop];
-    if (typeof value === 'function') {
-      return value.bind(conn);
-    }
-    return value;
-  },
-});
-
-export const diagnosticsQueue = new Proxy({} as Queue<DiagnosticJobData>, {
-  get(_target, prop) {
-    const queue = getDiagnosticsQueue() as any;
-    const value = queue[prop];
-    if (typeof value === 'function') {
-      return value.bind(queue);
-    }
-    return value;
-  },
-});
+export async function closeQueueResources(): Promise<void> {
+  if (_diagnosticsQueue) {
+    await _diagnosticsQueue.close();
+    _diagnosticsQueue = null;
+  }
+  if (_queueConnection) {
+    await _queueConnection.quit();
+    _queueConnection = null;
+  }
+}

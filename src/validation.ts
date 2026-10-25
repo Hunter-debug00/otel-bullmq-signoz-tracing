@@ -61,7 +61,6 @@ export function validateEnqueueRequest(body: unknown): ValidationResult<EnqueueR
     };
   }
 
-  // scenario
   const scenario = body.scenario !== undefined ? body.scenario : 'success';
   if (typeof scenario !== 'string' || !ALLOWED_SCENARIOS.includes(scenario as JobScenario)) {
     return {
@@ -71,7 +70,6 @@ export function validateEnqueueRequest(body: unknown): ValidationResult<EnqueueR
     };
   }
 
-  // count
   const count = body.count !== undefined ? body.count : 1;
   if (typeof count !== 'number' || !Number.isInteger(count) || count < 1 || count > 100) {
     return {
@@ -81,7 +79,6 @@ export function validateEnqueueRequest(body: unknown): ValidationResult<EnqueueR
     };
   }
 
-  // backoffDelayMs
   const backoffDelayMs = body.backoffDelayMs !== undefined ? body.backoffDelayMs : 1500;
   if (
     typeof backoffDelayMs !== 'number' ||
@@ -96,7 +93,6 @@ export function validateEnqueueRequest(body: unknown): ValidationResult<EnqueueR
     };
   }
 
-  // simulatedWorkMs (optional)
   let simulatedWorkMs: number | undefined;
   if (body.simulatedWorkMs !== undefined) {
     if (
@@ -114,7 +110,6 @@ export function validateEnqueueRequest(body: unknown): ValidationResult<EnqueueR
     simulatedWorkMs = body.simulatedWorkMs;
   }
 
-  // runId
   const runId = body.runId !== undefined ? body.runId : `run_${Date.now()}`;
   if (typeof runId !== 'string') {
     return {

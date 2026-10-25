@@ -5,13 +5,13 @@
   "main": "index.js",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "start:api": "OTEL_SERVICE_NAME=order-api npx tsx --import ./src/instrumentation.ts src/server.ts",
-    "start:worker": "OTEL_SERVICE_NAME=order-worker WORKER_CONCURRENCY=5 npx tsx --import ./src/instrumentation.ts src/worker.ts",
-    "start:worker:constrained": "OTEL_SERVICE_NAME=order-worker WORKER_CONCURRENCY=1 npx tsx --import ./src/instrumentation.ts src/worker.ts",
+    "start:api": "OTEL_SERVICE_NAME=order-api npx tsx --import ./src/bootstrap.ts src/server.ts",
+    "start:worker": "OTEL_SERVICE_NAME=order-worker WORKER_CONCURRENCY=5 npx tsx --import ./src/bootstrap.ts src/worker.ts",
+    "start:worker:constrained": "OTEL_SERVICE_NAME=order-worker WORKER_CONCURRENCY=1 npx tsx --import ./src/bootstrap.ts src/worker.ts",
     "scenarios": "npx tsx scripts/run-scenarios.ts",
     "typecheck": "tsc --noEmit -p tsconfig.check.json",
-    "test": "OTEL_SERVICE_NAME=test-runner npx tsx --import ./src/instrumentation.ts --test tests/*.test.ts",
-    "experiment": "OTEL_SERVICE_NAME=order-worker npx tsx --import ./src/instrumentation.ts scripts/run-experiment.ts"
+    "test": "npx tsx --test tests/**/*.test.ts",
+    "experiment": "OTEL_SERVICE_NAME=order-worker npx tsx --import ./src/bootstrap.ts scripts/run-experiment.ts"
   },
   "repository": {
     "type": "git",

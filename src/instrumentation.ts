@@ -7,9 +7,8 @@ import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-http';
 import { PeriodicExportingMetricReader } from '@opentelemetry/sdk-metrics';
 import { resourceFromAttributes } from '@opentelemetry/resources';
 import { ATTR_SERVICE_NAME } from '@opentelemetry/semantic-conventions';
-import { SimpleSpanProcessor, InMemorySpanExporter } from '@opentelemetry/sdk-trace-base';
+import type { SpanProcessor } from '@opentelemetry/sdk-trace-base';
 
-// Load .env into process.env before configuring OTel or services
 const envPath = path.resolve(process.cwd(), '.env');
 if (fs.existsSync(envPath)) {
   try {
@@ -17,6 +16,13 @@ if (fs.existsSync(envPath)) {
   } catch (err) {
     console.warn(`[OTel] Warning: Failed to load .env file from ${envPath}:`, err);
   }
+}
+
+export function normalizeOtlpBaseUrl(rawUrl?: string): string {
+  const fallback = 'http://localhost:4318';
+  const trimmed = rawUrl?.trim();
+  if (!trimmed) return fallback;
+  return trimmed.replace(/\/+$/, '');
 }
 
 export function parseOtlpHeaders(rawHeaders?: string): Record<string, string> {
@@ -39,59 +45,84 @@ export function parseOtlpHeaders(rawHeaders?: string): Record<string, string> {
   return headers;
 }
 
-const serviceName = process.env.OTEL_SERVICE_NAME || 'bullmq-diagnostics';
-const otlpBaseUrl = process.env.OTEL_EXPORTER_OTLP_ENDPOINT || 'http://localhost:4318';
-const otlpHeaders = parseOtlpHeaders(process.env.OTEL_EXPORTER_OTLP_HEADERS);
+export interface CreateTelemetrySdkOptions {
+  serviceName?: string;
+  otlpEndpoint?: string;
+  otlpHeaders?: Record<string, string>;
+  metricExportIntervalMillis?: number;
+  spanProcessors?: SpanProcessor[];
+}
 
-const traceExporter = new OTLPTraceExporter({
-  url: `${otlpBaseUrl}/v1/traces`,
-  headers: otlpHeaders,
-});
+export function createTelemetrySdk(options: CreateTelemetrySdkOptions = {}): NodeSDK {
+  const serviceName =
+    options.serviceName ?? process.env.OTEL_SERVICE_NAME ?? 'bullmq-telemetry-service';
+  const baseUrl = normalizeOtlpBaseUrl(
+    options.otlpEndpoint ?? process.env.OTEL_EXPORTER_OTLP_ENDPOINT
+  );
+  const headers =
+    options.otlpHeaders ?? parseOtlpHeaders(process.env.OTEL_EXPORTER_OTLP_HEADERS);
 
-const metricExporter = new OTLPMetricExporter({
-  url: `${otlpBaseUrl}/v1/metrics`,
-  headers: otlpHeaders,
-});
+  const traceExporter = new OTLPTraceExporter({
+    url: `${baseUrl}/v1/traces`,
+    headers,
+  });
 
-const metricReader = new PeriodicExportingMetricReader({
-  exporter: metricExporter,
-  exportIntervalMillis: 5000,
-});
+  const metricExporter = new OTLPMetricExporter({
+    url: `${baseUrl}/v1/metrics`,
+    headers,
+  });
 
-export const inMemorySpanExporter = new InMemorySpanExporter();
-export const spanProcessor = new SimpleSpanProcessor(inMemorySpanExporter);
+  const metricReader = new PeriodicExportingMetricReader({
+    exporter: metricExporter,
+    exportIntervalMillis: options.metricExportIntervalMillis ?? 5000,
+  });
 
-export const sdk = new NodeSDK({
-  resource: resourceFromAttributes({
-    [ATTR_SERVICE_NAME]: serviceName,
-  }),
-  traceExporter,
-  metricReader,
-  spanProcessors: [spanProcessor],
-  instrumentations: [
-    getNodeAutoInstrumentations({
-      '@opentelemetry/instrumentation-fs': { enabled: false },
+  return new NodeSDK({
+    serviceName,
+    resource: resourceFromAttributes({
+      [ATTR_SERVICE_NAME]: serviceName,
     }),
-  ],
-});
+    traceExporter,
+    ...(options.spanProcessors ? { spanProcessors: options.spanProcessors } : {}),
+    metricReader,
+    instrumentations: [
+      getNodeAutoInstrumentations({
+        '@opentelemetry/instrumentation-fs': { enabled: false },
+      }),
+    ],
+  });
+}
+
+let defaultSdk: NodeSDK | null = null;
+export function getDefaultSdk(): NodeSDK {
+  if (!defaultSdk) {
+    defaultSdk = createTelemetrySdk();
+  }
+  return defaultSdk;
+}
 
 let isStarted = false;
 let shutdownPromise: Promise<void> | null = null;
 
-export function startTelemetry(): void {
+export function startTelemetry(customSdk?: NodeSDK): void {
   if (isStarted) return;
+  const sdk = customSdk ?? getDefaultSdk();
   sdk.start();
   isStarted = true;
+  const serviceName = process.env.OTEL_SERVICE_NAME || 'bullmq-diagnostics';
   console.log(`[OTel] Traces & Metrics active for service: ${serviceName}`);
 }
 
-export async function shutdownTelemetry(): Promise<void> {
+export async function shutdownTelemetry(customSdk?: NodeSDK): Promise<void> {
   if (!isStarted) {
     return;
   }
   if (shutdownPromise) {
     return shutdownPromise;
   }
+  const sdk = customSdk ?? getDefaultSdk();
+  const serviceName = process.env.OTEL_SERVICE_NAME || 'bullmq-diagnostics';
+  const otlpBaseUrl = normalizeOtlpBaseUrl(process.env.OTEL_EXPORTER_OTLP_ENDPOINT);
   shutdownPromise = (async () => {
     try {
       await sdk.shutdown();
@@ -105,10 +136,8 @@ export async function shutdownTelemetry(): Promise<void> {
       }
     } finally {
       isStarted = false;
+      shutdownPromise = null;
     }
   })();
   return shutdownPromise;
 }
-
-// Auto-start when imported as an instrumentation preload
-startTelemetry();

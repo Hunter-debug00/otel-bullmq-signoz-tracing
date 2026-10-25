@@ -41,7 +41,10 @@ This repository highlights a critical observability distinction in asynchronous 
   - `retry_attempt`: Represents **cumulative elapsed wall-clock age** across all previous execution attempts, failures, and backoff wait intervals. It does not measure only the most recent backoff sleep.
 - **Wall-Clock Timestamps & Clock Skew**:
   - `job_age_at_attempt_ms` is calculated as $\text{job.processedOn} - \text{job.timestamp}$.
-  - Because producer and worker machines may experience NTP drift, negative clock skew (`processedOn < timestamp`) is explicitly intercepted, logged with a diagnostic warning, and clamped to `0` before recording.
+  - When `job.processedOn` is missing/invalid or produces negative clock skew ($\text{job.processedOn} < \text{job.timestamp}$ due to node NTP drift), the histogram observation is explicitly **skipped** rather than fabricated or clamped to `0`, and a rate-limited diagnostic warning is logged to maintain metric data integrity.
+
+> [!NOTE]
+> **Operational Note on Label Cardinality & Security**: `job_age_at_attempt_ms` bounds `bullmq.job.name` via a four-value allowlist (`ALLOWED_SCENARIOS`) and excludes high-cardinality identifiers (`job.id`, `run_id`). It retains `bullmq.queue.name` under the architectural assumption that queue names are static and operationally bounded; deployments that dynamically create per-tenant queues should omit `bullmq.queue.name` from metric attributes. Finally, the Express API in this repository is an unauthenticated local diagnostic harness and is not hardened for direct public internet exposure.
 
 ---
 
@@ -63,10 +66,10 @@ cp .env.example .env
 
 Review `.env`:
 - **Local SigNoz**: Leave `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318`.
-- **SigNoz Cloud**: Set your cloud ingestion endpoint and token:
+- **SigNoz Cloud**: Set your cloud regional ingestion endpoint and ingestion key:
   ```bash
-  OTEL_EXPORTER_OTLP_ENDPOINT=https://ingest.us.signoz.cloud:443
-  OTEL_EXPORTER_OTLP_HEADERS=signoz-access-token=your-token-here
+  OTEL_EXPORTER_OTLP_ENDPOINT=https://ingest.<region>.signoz.cloud:443
+  OTEL_EXPORTER_OTLP_HEADERS=signoz-ingestion-key=<your-signoz-ingestion-key>
   ```
 
 ### 3. Start Redis
@@ -132,11 +135,11 @@ npm run experiment
 
 | Condition | Concurrency | Enqueue Batch Latency (Mean) | In-Worker Elapsed Duration P50 / P95 (Median) | Enqueue-to-Attempt Age P50 / P95 (Median) |
 | :--- | :---: | :---: | :---: | :---: |
-| **Baseline (`diag-c5-trial-*`)** | **5** | **`7.18 ms`** | **`100.6 ms` / `102.2 ms`** | **`121 ms` / `327 ms`** |
-| **Constrained (`diag-c1-trial-*`)** | **1** | **`7.90 ms`** | **`100.2 ms` / `101.1 ms`** | **`930 ms` / `1,855 ms`** |
+| **Baseline (`diag-c5-trial-*`)** | **5** | **`6.92 ms`** | **`100.7 ms` / `102.4 ms`** | **`116 ms` / `324 ms`** |
+| **Constrained (`diag-c1-trial-*`)** | **1** | **`8.38 ms`** | **`100.2 ms` / `100.9 ms`** | **`938 ms` / `1,859 ms`** |
 
 > [!NOTE]
-> While worker execution duration (`processor_elapsed_ms`) remained constant at $\approx 100\text{ ms}$ under both conditions, `job_age_at_attempt_ms` P95 jumped from **`327 ms`** under concurrency 5 to **`1,855 ms`** under constrained concurrency 1 due to head-of-line queue backlog.
+> While worker execution duration (`processor_elapsed_ms`) remained constant at $\approx 100\text{ ms}$ under both conditions, `job_age_at_attempt_ms` P95 jumped from **`324 ms`** under concurrency 5 to **`1,859 ms`** under constrained concurrency 1 due to head-of-line queue backlog.
 
 Generated artifacts:
 - [`results/sample-job-observations.csv`](results/sample-job-observations.csv): 200 per-job observations (`condition`, `queue_name`, `concurrency`, `trial`, `job_id`, `attempt_number`, `enqueue_to_attempt_age_ms`, `processor_elapsed_ms`).

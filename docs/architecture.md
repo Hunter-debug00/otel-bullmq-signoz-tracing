@@ -58,7 +58,7 @@ Timeline of a Job Attempt:
 2. **Wall-Clock & Clock Skew Assumptions**:
    - `job_age_at_attempt_ms` calculates $\text{job.processedOn} - \text{job.timestamp}$.
    - Because `timestamp` is recorded by the producer machine and `processedOn` is recorded by the worker machine, system clock drift (NTP skew) across separate physical hosts can affect readings.
-   - Negative skew (`processedOn < timestamp`) is explicitly intercepted and clamped to `0` with a warning log to maintain non-negative histogram metrics.
+   - Negative skew (`processedOn < timestamp`) is explicitly intercepted: the histogram observation is skipped rather than clamped to 0, and a rate-limited warning is logged to maintain metric data integrity.
 
 ---
 

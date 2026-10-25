@@ -29,8 +29,8 @@ Running a full local SigNoz stack (ClickHouse, Alertmanager, Query Service, Coll
 
 1. In `.env`:
    ```bash
-   OTEL_EXPORTER_OTLP_ENDPOINT=https://ingest.us.signoz.cloud:443
-   OTEL_EXPORTER_OTLP_HEADERS=signoz-access-token=your-ingestion-key
+   OTEL_EXPORTER_OTLP_ENDPOINT=https://ingest.<region>.signoz.cloud:443
+   OTEL_EXPORTER_OTLP_HEADERS=signoz-ingestion-key=<your-signoz-ingestion-key>
    ```
 2. Start your services normally:
    ```bash
@@ -89,4 +89,4 @@ The `job_age_at_attempt_ms` metric relies on wall-clock time:
 $$\text{age} = \text{job.processedOn} - \text{job.timestamp}$$
 
 - If producer instances and worker instances run on separate physical hosts whose system clocks are out of synchronization (e.g. NTP drift), the subtraction may yield anomalous readings.
-- The implementation in [`src/telemetry/job-age.ts`](../src/telemetry/job-age.ts) detects negative skew (`processedOn < timestamp`), logs a warning, and clamps the metric value to `0` before exporting.
+- The implementation in [`src/telemetry/job-age.ts`](../src/telemetry/job-age.ts) detects negative skew (`processedOn < timestamp`), logs a rate-limited warning, and skips the metric observation to prevent recording misleading data.

@@ -6,7 +6,7 @@ import {
   recordJobAgeAtAttempt,
   JOB_AGE_BUCKET_BOUNDARIES,
 } from '../src/telemetry/job-age';
-import { parseOtlpHeaders } from '../src/instrumentation';
+import { parseOtlpHeaders, normalizeOtlpBaseUrl } from '../src/instrumentation';
 
 describe('calculateEnqueueToAttemptAgeMs', () => {
   it('calculates accurate duration between enqueue and attempt timestamps', () => {
@@ -40,10 +40,9 @@ describe('calculateEnqueueToAttemptAgeMs', () => {
     );
   });
 
-  it('detects negative clock skew (processedOn < enqueueTimestamp) and clamps duration to 0', () => {
-    // processedOn earlier than enqueue due to clock skew across nodes
+  it('detects negative clock skew (processedOn < enqueueTimestamp) and returns null', () => {
     const age = calculateEnqueueToAttemptAgeMs(1500, 1200);
-    assert.equal(age, 0);
+    assert.equal(age, null);
   });
 });
 
@@ -57,8 +56,9 @@ describe('recordJobAgeAtAttempt', () => {
       data: { scenario: 'success' },
     } as unknown as Job;
 
-    const ageMs = recordJobAgeAtAttempt(fakeJob);
-    assert.equal(ageMs, 450);
+    const res = recordJobAgeAtAttempt(fakeJob);
+    assert.equal(res.recorded, true);
+    assert.equal(res.ageMs, 450);
   });
 
   it('calculates cumulative job age including backoff on retry attempts', () => {
@@ -70,12 +70,12 @@ describe('recordJobAgeAtAttempt', () => {
       data: { scenario: 'transient-retry' },
     } as unknown as Job;
 
-    const ageMs = recordJobAgeAtAttempt(fakeJob);
-    assert.equal(ageMs, 2255);
+    const res = recordJobAgeAtAttempt(fakeJob);
+    assert.equal(res.recorded, true);
+    assert.equal(res.ageMs, 2255);
   });
 
   it('calculates cumulative job age for intentionally delayed jobs including intentional delay', () => {
-    // Job scheduled with 5000ms delay, picked up 250ms after eligibility
     const fakeJob = {
       timestamp: 10000,
       processedOn: 15250,
@@ -84,22 +84,43 @@ describe('recordJobAgeAtAttempt', () => {
       data: { scenario: 'success' },
     } as unknown as Job;
 
-    const ageMs = recordJobAgeAtAttempt(fakeJob);
-    assert.equal(ageMs, 5250);
+    const res = recordJobAgeAtAttempt(fakeJob);
+    assert.equal(res.recorded, true);
+    assert.equal(res.ageMs, 5250);
   });
 
-  it('handles missing processedOn by falling back to current local timestamp', () => {
-    const before = Date.now();
+  it('skips metric observation when processedOn is missing without failing', () => {
     const fakeJob = {
-      timestamp: before - 200,
+      timestamp: 1000,
       processedOn: undefined,
       attemptsMade: 0,
       queueName: 'diagnostics-job-queue',
       data: { scenario: 'success' },
     } as unknown as Job;
 
-    const ageMs = recordJobAgeAtAttempt(fakeJob);
-    assert.ok(ageMs >= 200 && ageMs <= 500);
+    const res = recordJobAgeAtAttempt(fakeJob);
+    assert.deepEqual(res, {
+      recorded: false,
+      ageMs: null,
+      anomalyReason: 'missing_processed_on',
+    });
+  });
+
+  it('skips metric observation when negative clock skew is detected', () => {
+    const fakeJob = {
+      timestamp: 2000,
+      processedOn: 1800,
+      attemptsMade: 0,
+      queueName: 'diagnostics-job-queue',
+      data: { scenario: 'success' },
+    } as unknown as Job;
+
+    const res = recordJobAgeAtAttempt(fakeJob);
+    assert.deepEqual(res, {
+      recorded: false,
+      ageMs: null,
+      anomalyReason: 'negative_clock_skew',
+    });
   });
 
   it('falls back to unknown scenario on unlisted scenario strings to bound cardinality', () => {
@@ -111,8 +132,9 @@ describe('recordJobAgeAtAttempt', () => {
       data: { scenario: 'malicious-cardinality-injection' },
     } as unknown as Job;
 
-    const ageMs = recordJobAgeAtAttempt(fakeJob);
-    assert.equal(ageMs, 200);
+    const res = recordJobAgeAtAttempt(fakeJob);
+    assert.equal(res.recorded, true);
+    assert.equal(res.ageMs, 200);
   });
 });
 
@@ -135,10 +157,10 @@ describe('JOB_AGE_BUCKET_BOUNDARIES', () => {
 describe('parseOtlpHeaders', () => {
   it('parses comma-separated key=value pairs and trims whitespace', () => {
     const parsed = parseOtlpHeaders(
-      'signoz-access-token=token_123, x-custom-header = test_val , other=456 '
+      'signoz-ingestion-key=token_123, x-custom-header = test_val , other=456 '
     );
     assert.deepEqual(parsed, {
-      'signoz-access-token': 'token_123',
+      'signoz-ingestion-key': 'token_123',
       'x-custom-header': 'test_val',
       'other': '456',
     });
@@ -147,5 +169,26 @@ describe('parseOtlpHeaders', () => {
   it('returns empty object for empty or missing headers', () => {
     assert.deepEqual(parseOtlpHeaders(''), {});
     assert.deepEqual(parseOtlpHeaders(undefined), {});
+  });
+});
+
+describe('normalizeOtlpBaseUrl', () => {
+  it('strips trailing slashes from endpoint URL', () => {
+    assert.equal(normalizeOtlpBaseUrl('http://localhost:4318/'), 'http://localhost:4318');
+    assert.equal(normalizeOtlpBaseUrl('http://localhost:4318///'), 'http://localhost:4318');
+  });
+
+  it('preserves clean URL without trailing slashes', () => {
+    assert.equal(normalizeOtlpBaseUrl('http://localhost:4318'), 'http://localhost:4318');
+    assert.equal(
+      normalizeOtlpBaseUrl('https://ingest.us.signoz.cloud:443'),
+      'https://ingest.us.signoz.cloud:443'
+    );
+  });
+
+  it('falls back to default localhost:4318 when undefined or empty', () => {
+    assert.equal(normalizeOtlpBaseUrl(undefined), 'http://localhost:4318');
+    assert.equal(normalizeOtlpBaseUrl(''), 'http://localhost:4318');
+    assert.equal(normalizeOtlpBaseUrl('   '), 'http://localhost:4318');
   });
 });
