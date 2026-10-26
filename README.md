@@ -19,7 +19,7 @@ The included experiment runs 20 jobs of 100 ms simulated work across two conditi
 | Enqueue-to-attempt age P95 | 328 ms | 1,844 ms |
 
 ### Key Takeaway
-Processing duration remains constant at approximately 100 ms under both conditions. However, under constrained concurrency, P95 queue wait age jumps from 328 ms to 1,844 ms because the 20th job must wait for the 19 jobs before it ($20 \times 100\text{ ms} \approx 2\text{ s}$). 
+Processing duration remains constant at approximately 100 ms under both conditions. However, under constrained concurrency, P95 queue wait age jumps from 328 ms to 1,844 ms because the 20th job must wait for the 19 jobs before it ($19 \times 100\text{ ms} = 1.9\text{ s}$, with the full 20-job batch taking $\approx 2\text{ s}$ to drain). 
 
 A monitoring dashboard that only plots `bullmq.job.duration` would show healthy 100 ms execution times while users experience multi-second delays. Plotting `job_age_at_attempt_ms` reveals the queue backlog immediately.
 
@@ -72,11 +72,11 @@ npm run scenarios
 ```
 
 This sends five diagnostic scenarios:
-1. `success`: standard 100 ms job completing on attempt 1.
-2. `transient-retry`: fails attempt 1, retries with exponential backoff, and succeeds on attempt 2.
-3. `exhausted-failure`: fails all 3 attempts, marking the span with status `ERROR` and attaching exception events.
+1. `success`: standard 50 ms job completing on attempt 1.
+2. `transient-retry`: fails attempt 1, retries with exponential backoff (1,500 ms), and succeeds on attempt 2.
+3. `exhausted-failure`: fails all 3 attempts with exponential backoff (1,000 ms), marking the span with status `ERROR` and attaching exception events.
 4. `slow-worker`: simulated slow handler (2,000 ms).
-5. Backlog burst: batch of 20 concurrent jobs demonstrating queue wait latency.
+5. Backlog burst: batch of 20 concurrent jobs (100 ms work each) demonstrating queue backlog wait.
 
 ### 4. Inspect in SigNoz
 

@@ -36,7 +36,12 @@ function warnRateLimited(reason: string, message: string): void {
 export interface JobAgeMeasurementResult {
   recorded: boolean;
   ageMs: number | null;
-  anomalyReason?: 'missing_processed_on' | 'invalid_enqueue_timestamp' | 'negative_clock_skew';
+  anomalyReason?:
+    | 'missing_processed_on'
+    | 'invalid_processed_on'
+    | 'missing_enqueue_timestamp'
+    | 'invalid_enqueue_timestamp'
+    | 'negative_clock_skew';
 }
 
 export function calculateEnqueueToAttemptAgeMs(
@@ -76,28 +81,42 @@ export function recordJobAgeAtAttempt(
   jobName?: string,
   histogram: Histogram = jobAgeHistogram
 ): JobAgeMeasurementResult {
-  if (
-    job.processedOn === undefined ||
-    typeof job.processedOn !== 'number' ||
-    !Number.isFinite(job.processedOn) ||
-    job.processedOn <= 0
-  ) {
+  if (job.processedOn === undefined || job.processedOn === null) {
     warnRateLimited(
       'missing_processed_on',
-      `Skipped job_age_at_attempt_ms observation because job.processedOn is missing or invalid (jobId=${job.id ?? 'unknown'}).`
+      `Skipped job_age_at_attempt_ms observation because job.processedOn is missing (jobId=${job.id ?? 'unknown'}).`
     );
     return { recorded: false, ageMs: null, anomalyReason: 'missing_processed_on' };
   }
 
   if (
-    job.timestamp === undefined ||
+    typeof job.processedOn !== 'number' ||
+    !Number.isFinite(job.processedOn) ||
+    job.processedOn <= 0
+  ) {
+    warnRateLimited(
+      'invalid_processed_on',
+      `Skipped job_age_at_attempt_ms observation because job.processedOn is invalid: ${job.processedOn} (jobId=${job.id ?? 'unknown'}).`
+    );
+    return { recorded: false, ageMs: null, anomalyReason: 'invalid_processed_on' };
+  }
+
+  if (job.timestamp === undefined || job.timestamp === null) {
+    warnRateLimited(
+      'missing_enqueue_timestamp',
+      `Skipped job_age_at_attempt_ms observation because job.timestamp is missing (jobId=${job.id ?? 'unknown'}).`
+    );
+    return { recorded: false, ageMs: null, anomalyReason: 'missing_enqueue_timestamp' };
+  }
+
+  if (
     typeof job.timestamp !== 'number' ||
     !Number.isFinite(job.timestamp) ||
     job.timestamp <= 0
   ) {
     warnRateLimited(
       'invalid_enqueue_timestamp',
-      `Skipped job_age_at_attempt_ms observation due to invalid timestamp (jobId=${job.id ?? 'unknown'}).`
+      `Skipped job_age_at_attempt_ms observation due to invalid timestamp: ${job.timestamp} (jobId=${job.id ?? 'unknown'}).`
     );
     return { recorded: false, ageMs: null, anomalyReason: 'invalid_enqueue_timestamp' };
   }

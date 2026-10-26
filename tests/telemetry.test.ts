@@ -16,6 +16,7 @@ describe('calculateEnqueueToAttemptAgeMs', () => {
   });
 
   it('returns null on missing, zero, negative, or non-finite enqueueTimestamp', () => {
+    assert.equal(calculateEnqueueToAttemptAgeMs(undefined as unknown as number, 1500), null);
     assert.equal(calculateEnqueueToAttemptAgeMs(0, 1500), null);
     assert.equal(calculateEnqueueToAttemptAgeMs(-100, 1500), null);
     assert.equal(calculateEnqueueToAttemptAgeMs(NaN, 1500), null);
@@ -81,8 +82,25 @@ describe('recordJobAgeAtAttempt', () => {
     assert.equal(res.ageMs, 5250);
   });
 
-  it('rejects missing, zero, negative, and non-finite processedOn as missing_processed_on', () => {
-    for (const invalidProcessedOn of [undefined, 0, -100, NaN, Infinity]) {
+  it('rejects missing processedOn as missing_processed_on', () => {
+    const fakeJob = {
+      timestamp: 1000,
+      processedOn: undefined,
+      attemptsMade: 0,
+      queueName: 'diagnostics-job-queue',
+      data: { scenario: 'success' },
+    } as unknown as Job;
+
+    const res = recordJobAgeAtAttempt(fakeJob);
+    assert.deepEqual(res, {
+      recorded: false,
+      ageMs: null,
+      anomalyReason: 'missing_processed_on',
+    });
+  });
+
+  it('rejects zero, negative, and non-finite processedOn as invalid_processed_on', () => {
+    for (const invalidProcessedOn of [0, -100, NaN, Infinity, -Infinity]) {
       const fakeJob = {
         timestamp: 1000,
         processedOn: invalidProcessedOn,
@@ -95,13 +113,30 @@ describe('recordJobAgeAtAttempt', () => {
       assert.deepEqual(res, {
         recorded: false,
         ageMs: null,
-        anomalyReason: 'missing_processed_on',
+        anomalyReason: 'invalid_processed_on',
       });
     }
   });
 
-  it('rejects missing, zero, negative, and non-finite timestamp as invalid_enqueue_timestamp', () => {
-    for (const invalidTimestamp of [undefined, 0, -50, NaN, Infinity]) {
+  it('rejects missing enqueue timestamp as missing_enqueue_timestamp', () => {
+    const fakeJob = {
+      timestamp: undefined as unknown as number,
+      processedOn: 1500,
+      attemptsMade: 0,
+      queueName: 'diagnostics-job-queue',
+      data: { scenario: 'success' },
+    } as unknown as Job;
+
+    const res = recordJobAgeAtAttempt(fakeJob);
+    assert.deepEqual(res, {
+      recorded: false,
+      ageMs: null,
+      anomalyReason: 'missing_enqueue_timestamp',
+    });
+  });
+
+  it('rejects zero, negative, and non-finite timestamp as invalid_enqueue_timestamp', () => {
+    for (const invalidTimestamp of [0, -50, NaN, Infinity, -Infinity]) {
       const fakeJob = {
         timestamp: invalidTimestamp,
         processedOn: 1500,

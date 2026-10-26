@@ -51,11 +51,6 @@ export interface CreateTelemetrySdkOptions {
   otlpHeaders?: Record<string, string>;
   metricExportIntervalMillis?: number;
   timeoutMillis?: number;
-  /**
-   * Intentional test-only override (e.g. for in-memory span assertions in tests).
-   * In @opentelemetry/sdk-node 0.223.0, providing spanProcessors takes precedence
-   * over traceExporter. Production startup must omit this to use the OTLP exporter.
-   */
   spanProcessors?: SpanProcessor[];
 }
 

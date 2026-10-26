@@ -97,11 +97,11 @@ SigNoz stores OpenTelemetry metrics using PromQL with quotes and curly braces fo
 
 ### Dashboard Queries (PromQL)
 
-#### 1. P95 & P50 Queue Backlog Age per Queue
+#### 1. P95 & P50 Enqueue-to-Attempt Age per Queue
 Grouping by `(le, "bullmq.queue.name")` computes separate quantiles for each queue rather than flattening all queues into one:
 
 ```promql
-# P95 Queue wait latency per queue
+# P95 Enqueue-to-attempt age per queue (approximates queue wait for initial attempts)
 histogram_quantile(
   0.95,
   sum by (le, "bullmq.queue.name") (
@@ -109,7 +109,7 @@ histogram_quantile(
   )
 )
 
-# P50 Queue wait latency per queue
+# P50 Enqueue-to-attempt age per queue
 histogram_quantile(
   0.50,
   sum by (le, "bullmq.queue.name") (
@@ -120,7 +120,7 @@ histogram_quantile(
 
 *(Note: To compute a fleet-wide aggregate quantile across all queues combined, group solely `by (le)`).*
 
-#### 2. Handler Execution Duration vs. Queue Wait Age
+#### 2. Handler Execution Duration vs. Enqueue-to-Attempt Age
 Put these two queries on the same dashboard panel to correlate queue backlog against task processing:
 
 ```promql
@@ -132,7 +132,7 @@ histogram_quantile(
   )
 )
 
-# P95 Queue wait age per queue
+# P95 Enqueue-to-attempt age per queue
 histogram_quantile(
   0.95,
   sum by (le, "bullmq.queue.name") (
@@ -153,8 +153,8 @@ sum by ("bullmq.job.name", "bullmq.queue.name") (rate({"job_age_at_attempt_ms.co
 
 *Note: To measure only initial job executions (excluding retries), filter by `{"bullmq.job.attempt_type" = "first_attempt"}`.*
 
-#### 4. Retry vs. First-Attempt Distribution
-Track how often retries occur relative to first attempts:
+#### 4. Attempt Rate by Attempt Type
+Track attempt rates separated into initial attempts and retries:
 
 ```promql
 sum by ("bullmq.job.attempt_type", "bullmq.queue.name") (rate({"job_age_at_attempt_ms.count"}[5m]))
