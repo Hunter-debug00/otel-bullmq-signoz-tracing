@@ -19,7 +19,7 @@ The included experiment runs 20 jobs of 100 ms simulated work across two conditi
 | Enqueue-to-attempt age P95 | 328 ms | 1,844 ms |
 
 ### Key Takeaway
-Processing duration remains constant at approximately 100 ms under both conditions. However, under constrained concurrency, P95 queue wait age jumps from 328 ms to 1,844 ms because the 20th job must wait for the 19 jobs before it ($19 \times 100\text{ ms} = 1.9\text{ s}$, with the full 20-job batch taking $\approx 2\text{ s}$ to drain). 
+Processing duration remains constant at approximately 100 ms under both conditions. However, under constrained concurrency, the twentieth job waits behind 19 jobs, approximately 1.9 seconds under idealized sequential processing ($19 \times 100\text{ ms} = 1.9\text{ s}$), while the complete 20-job batch takes approximately 2 seconds to drain. The observed P95 queue wait age of 1,844 ms reflects this queue backlog delay.
 
 A monitoring dashboard that only plots `bullmq.job.duration` would show healthy 100 ms execution times while users experience multi-second delays. Plotting `job_age_at_attempt_ms` reveals the queue backlog immediately.
 
@@ -35,7 +35,11 @@ A monitoring dashboard that only plots `bullmq.job.duration` would show healthy 
 ### 1. Setup Environment & Redis
 
 ```bash
-# Clone and install dependencies
+# Clone the repository and enter the directory
+git clone https://github.com/Hunter-debug00/otel-bullmq-signoz-tracing.git
+cd otel-bullmq-signoz-tracing
+
+# Install pinned dependencies
 npm ci
 
 # Configure environment
@@ -45,12 +49,14 @@ cp .env.example .env
 docker compose up -d redis
 ```
 
-Local SigNoz accepts OTLP on `http://localhost:4318` by default. For SigNoz Cloud, update `.env` with your regional ingestion endpoint and ingestion key:
-
-```bash
-OTEL_EXPORTER_OTLP_ENDPOINT=https://ingest.<region>.signoz.cloud:443
-OTEL_EXPORTER_OTLP_HEADERS=signoz-ingestion-key=<your-signoz-ingestion-key>
-```
+> [!NOTE]
+> `docker compose up -d redis` starts **Redis only**. Telemetry must be sent to a separate SigNoz instance:
+> - **Local SigNoz**: Listens on `http://localhost:4318` by default (see [SigNoz local installation](https://signoz.io/docs/install/docker/)).
+> - **SigNoz Cloud**: Set your ingestion endpoint and ingestion key in `.env`:
+>   ```bash
+>   OTEL_EXPORTER_OTLP_ENDPOINT=https://ingest.<region>.signoz.cloud:443
+>   OTEL_EXPORTER_OTLP_HEADERS=signoz-ingestion-key=<your-signoz-ingestion-key>
+>   ```
 
 ### 2. Start the Services
 
@@ -160,6 +166,9 @@ All configuration is managed via environment variables (or `.env`):
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4318` | Base URL for OTLP/HTTP export. |
 | `OTEL_EXPORTER_OTLP_HEADERS` | *empty* | Comma-separated headers (e.g. `signoz-ingestion-key=...`). |
 | `OTEL_EXPORTER_OTLP_TIMEOUT` | `5000` | Exporter timeout in ms before dropping telemetry on shutdown. |
+
+> [!WARNING]
+> **Diagnostic Demonstration Notice**: This repository is designed as a local diagnostic harness, not a production-hardened service. The Express API binds to `0.0.0.0` without authentication or rate limiting. Do not expose this service directly to the public internet. Production deployments require appropriate authentication, reverse-proxy termination, rate limiting, and network access controls.
 
 ---
 
