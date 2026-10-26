@@ -15,30 +15,21 @@ describe('calculateEnqueueToAttemptAgeMs', () => {
     assert.equal(calculateEnqueueToAttemptAgeMs(1000, 1000), 0);
   });
 
-  it('throws on missing or non-finite enqueueTimestamp', () => {
-    assert.throws(
-      () => calculateEnqueueToAttemptAgeMs(0, 1500),
-      /Invalid or missing enqueueTimestamp/
-    );
-    assert.throws(
-      () => calculateEnqueueToAttemptAgeMs(-100, 1500),
-      /Invalid or missing enqueueTimestamp/
-    );
-    assert.throws(
-      () => calculateEnqueueToAttemptAgeMs(NaN, 1500),
-      /Invalid or missing enqueueTimestamp/
-    );
+  it('returns null on missing, zero, negative, or non-finite enqueueTimestamp', () => {
+    assert.equal(calculateEnqueueToAttemptAgeMs(0, 1500), null);
+    assert.equal(calculateEnqueueToAttemptAgeMs(-100, 1500), null);
+    assert.equal(calculateEnqueueToAttemptAgeMs(NaN, 1500), null);
+    assert.equal(calculateEnqueueToAttemptAgeMs(Infinity, 1500), null);
+    assert.equal(calculateEnqueueToAttemptAgeMs(-Infinity, 1500), null);
   });
 
-  it('throws on missing or non-finite processedOnTimestamp', () => {
-    assert.throws(
-      () => calculateEnqueueToAttemptAgeMs(1000, undefined),
-      /Invalid or missing processedOnTimestamp/
-    );
-    assert.throws(
-      () => calculateEnqueueToAttemptAgeMs(1000, NaN),
-      /Invalid or missing processedOnTimestamp/
-    );
+  it('returns null on missing, zero, negative, or non-finite processedOnTimestamp', () => {
+    assert.equal(calculateEnqueueToAttemptAgeMs(1000, undefined), null);
+    assert.equal(calculateEnqueueToAttemptAgeMs(1000, 0), null);
+    assert.equal(calculateEnqueueToAttemptAgeMs(1000, -50), null);
+    assert.equal(calculateEnqueueToAttemptAgeMs(1000, NaN), null);
+    assert.equal(calculateEnqueueToAttemptAgeMs(1000, Infinity), null);
+    assert.equal(calculateEnqueueToAttemptAgeMs(1000, -Infinity), null);
   });
 
   it('detects negative clock skew (processedOn < enqueueTimestamp) and returns null', () => {
@@ -90,21 +81,42 @@ describe('recordJobAgeAtAttempt', () => {
     assert.equal(res.ageMs, 5250);
   });
 
-  it('skips metric observation when processedOn is missing without failing', () => {
-    const fakeJob = {
-      timestamp: 1000,
-      processedOn: undefined,
-      attemptsMade: 0,
-      queueName: 'diagnostics-job-queue',
-      data: { scenario: 'success' },
-    } as unknown as Job;
+  it('rejects missing, zero, negative, and non-finite processedOn as missing_processed_on', () => {
+    for (const invalidProcessedOn of [undefined, 0, -100, NaN, Infinity]) {
+      const fakeJob = {
+        timestamp: 1000,
+        processedOn: invalidProcessedOn,
+        attemptsMade: 0,
+        queueName: 'diagnostics-job-queue',
+        data: { scenario: 'success' },
+      } as unknown as Job;
 
-    const res = recordJobAgeAtAttempt(fakeJob);
-    assert.deepEqual(res, {
-      recorded: false,
-      ageMs: null,
-      anomalyReason: 'missing_processed_on',
-    });
+      const res = recordJobAgeAtAttempt(fakeJob);
+      assert.deepEqual(res, {
+        recorded: false,
+        ageMs: null,
+        anomalyReason: 'missing_processed_on',
+      });
+    }
+  });
+
+  it('rejects missing, zero, negative, and non-finite timestamp as invalid_enqueue_timestamp', () => {
+    for (const invalidTimestamp of [undefined, 0, -50, NaN, Infinity]) {
+      const fakeJob = {
+        timestamp: invalidTimestamp,
+        processedOn: 1500,
+        attemptsMade: 0,
+        queueName: 'diagnostics-job-queue',
+        data: { scenario: 'success' },
+      } as unknown as Job;
+
+      const res = recordJobAgeAtAttempt(fakeJob);
+      assert.deepEqual(res, {
+        recorded: false,
+        ageMs: null,
+        anomalyReason: 'invalid_enqueue_timestamp',
+      });
+    }
   });
 
   it('skips metric observation when negative clock skew is detected', () => {

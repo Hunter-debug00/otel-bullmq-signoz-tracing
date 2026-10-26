@@ -48,14 +48,15 @@ export function calculateEnqueueToAttemptAgeMs(
     !Number.isFinite(enqueueTimestamp) ||
     enqueueTimestamp <= 0
   ) {
-    throw new Error(`Invalid or missing enqueueTimestamp: ${enqueueTimestamp}`);
+    return null;
   }
   if (
     processedOnTimestamp === undefined ||
     typeof processedOnTimestamp !== 'number' ||
-    !Number.isFinite(processedOnTimestamp)
+    !Number.isFinite(processedOnTimestamp) ||
+    processedOnTimestamp <= 0
   ) {
-    throw new Error(`Invalid or missing processedOnTimestamp: ${processedOnTimestamp}`);
+    return null;
   }
 
   const diff = processedOnTimestamp - enqueueTimestamp;
@@ -78,7 +79,8 @@ export function recordJobAgeAtAttempt(
   if (
     job.processedOn === undefined ||
     typeof job.processedOn !== 'number' ||
-    !Number.isFinite(job.processedOn)
+    !Number.isFinite(job.processedOn) ||
+    job.processedOn <= 0
   ) {
     warnRateLimited(
       'missing_processed_on',
@@ -87,17 +89,20 @@ export function recordJobAgeAtAttempt(
     return { recorded: false, ageMs: null, anomalyReason: 'missing_processed_on' };
   }
 
-  let ageMs: number | null = null;
-  try {
-    ageMs = calculateEnqueueToAttemptAgeMs(job.timestamp, job.processedOn);
-  } catch (err) {
+  if (
+    job.timestamp === undefined ||
+    typeof job.timestamp !== 'number' ||
+    !Number.isFinite(job.timestamp) ||
+    job.timestamp <= 0
+  ) {
     warnRateLimited(
       'invalid_enqueue_timestamp',
-      `Skipped job_age_at_attempt_ms observation due to invalid timestamp: ${err instanceof Error ? err.message : String(err)}`
+      `Skipped job_age_at_attempt_ms observation due to invalid timestamp (jobId=${job.id ?? 'unknown'}).`
     );
     return { recorded: false, ageMs: null, anomalyReason: 'invalid_enqueue_timestamp' };
   }
 
+  const ageMs = calculateEnqueueToAttemptAgeMs(job.timestamp, job.processedOn);
   if (ageMs === null) {
     return { recorded: false, ageMs: null, anomalyReason: 'negative_clock_skew' };
   }

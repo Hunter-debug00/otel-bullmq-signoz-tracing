@@ -97,36 +97,58 @@ SigNoz stores OpenTelemetry metrics using PromQL with quotes and curly braces fo
 
 ### Dashboard Queries (PromQL)
 
-#### 1. P95 & P50 Queue Backlog Age
-Plotting queue age highlights when workers are backlogged:
+#### 1. P95 & P50 Queue Backlog Age per Queue
+Grouping by `(le, "bullmq.queue.name")` computes separate quantiles for each queue rather than flattening all queues into one:
 
 ```promql
-# P95 Queue wait latency
-histogram_quantile(0.95, sum by (le) (rate({"job_age_at_attempt_ms.bucket"}[5m])))
+# P95 Queue wait latency per queue
+histogram_quantile(
+  0.95,
+  sum by (le, "bullmq.queue.name") (
+    rate({"job_age_at_attempt_ms.bucket"}[5m])
+  )
+)
 
-# P50 Queue wait latency
-histogram_quantile(0.50, sum by (le) (rate({"job_age_at_attempt_ms.bucket"}[5m])))
+# P50 Queue wait latency per queue
+histogram_quantile(
+  0.50,
+  sum by (le, "bullmq.queue.name") (
+    rate({"job_age_at_attempt_ms.bucket"}[5m])
+  )
+)
 ```
 
+*(Note: To compute a fleet-wide aggregate quantile across all queues combined, group solely `by (le)`).*
+
 #### 2. Handler Execution Duration vs. Queue Wait Age
-Put these two queries on the same dashboard panel:
+Put these two queries on the same dashboard panel to correlate queue backlog against task processing:
 
 ```promql
-# P95 Handler execution duration (bullmq-otel)
-histogram_quantile(0.95, sum by (le) (rate({"bullmq.job.duration.bucket"}[5m])))
+# P95 Handler execution duration per queue (bullmq-otel)
+histogram_quantile(
+  0.95,
+  sum by (le, "bullmq.queue.name") (
+    rate({"bullmq.job.duration.bucket"}[5m])
+  )
+)
 
-# P95 Queue wait age
-histogram_quantile(0.95, sum by (le) (rate({"job_age_at_attempt_ms.bucket"}[5m])))
+# P95 Queue wait age per queue
+histogram_quantile(
+  0.95,
+  sum by (le, "bullmq.queue.name") (
+    rate({"job_age_at_attempt_ms.bucket"}[5m])
+  )
+)
 ```
 
 - **If queue age rises while execution duration stays flat**: The worker pool has reached concurrency saturation. Jobs are queuing up waiting for available worker slots. Scale out worker concurrency or instances.
 - **If execution duration rises**: Downstream dependencies or job handlers are slow.
 
 #### 3. Attempt Throughput by Scenario
-Because `job_age_at_attempt_ms` is recorded at the start of each attempt, this query measures total attempt throughput:
+Because `job_age_at_attempt_ms` is recorded at the start of each attempt, this query measures total attempt throughput per queue:
 
 ```promql
-sum by ("bullmq.job.name") (rate({"job_age_at_attempt_ms.count"}[5m]))
+sum by ("bullmq.job.name", "bullmq.queue.name") (rate({"job_age_at_attempt_ms.count"}[5m]))
 ```
 
 *Note: To measure only initial job executions (excluding retries), filter by `{"bullmq.job.attempt_type" = "first_attempt"}`.*
@@ -135,7 +157,7 @@ sum by ("bullmq.job.name") (rate({"job_age_at_attempt_ms.count"}[5m]))
 Track how often retries occur relative to first attempts:
 
 ```promql
-sum by ("bullmq.job.attempt_type") (rate({"job_age_at_attempt_ms.count"}[5m]))
+sum by ("bullmq.job.attempt_type", "bullmq.queue.name") (rate({"job_age_at_attempt_ms.count"}[5m]))
 ```
 
 ---

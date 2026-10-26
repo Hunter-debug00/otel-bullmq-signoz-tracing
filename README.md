@@ -8,12 +8,15 @@ This repository demonstrates how to instrument BullMQ with OpenTelemetry and exp
 
 ## What the Benchmark Shows
 
-The included experiment runs 20 jobs of 100 ms simulated work across two conditions: baseline concurrency ($c=5$) and constrained concurrency ($c=1$). Each condition ran 5 trials on a 2-CPU Linux host using unique queues to avoid cache warming bias:
+The included experiment runs 20 jobs of 100 ms simulated work across two conditions: baseline concurrency ($c=5$) and constrained concurrency ($c=1$). Each condition ran 5 trials on a 2-CPU Linux host using unique queues to avoid cache warming bias. The P50 and P95 figures represent the median of five per-trial nearest-rank percentiles:
 
-| Worker Concurrency | Processing Duration (P50 / P95) | Queue Wait Age (P50 / P95) |
-| :---: | :---: | :---: |
-| **5 (Baseline)** | 100.6 ms / 101.6 ms | **118 ms / 328 ms** |
-| **1 (Constrained)** | 100.3 ms / 100.9 ms | **923 ms / 1,844 ms** |
+| Measurement | Concurrency 5 | Concurrency 1 |
+| :--- | :---: | :---: |
+| Mean enqueue-batch latency | 6.53 ms | 3.93 ms |
+| Processor elapsed P50 | 100.6 ms | 100.3 ms |
+| Processor elapsed P95 | 101.6 ms | 100.9 ms |
+| Enqueue-to-attempt age P50 | 118 ms | 923 ms |
+| Enqueue-to-attempt age P95 | 328 ms | 1,844 ms |
 
 ### Key Takeaway
 Processing duration remains constant at approximately 100 ms under both conditions. However, under constrained concurrency, P95 queue wait age jumps from 328 ms to 1,844 ms because the 20th job must wait for the 19 jobs before it ($20 \times 100\text{ ms} \approx 2\text{ s}$). 

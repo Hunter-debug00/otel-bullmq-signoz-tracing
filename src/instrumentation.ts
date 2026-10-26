@@ -61,7 +61,7 @@ export interface CreateTelemetrySdkOptions {
 
 export function createTelemetrySdk(options: CreateTelemetrySdkOptions = {}): NodeSDK {
   const serviceName =
-    options.serviceName ?? process.env.OTEL_SERVICE_NAME ?? 'bullmq-telemetry-service';
+    options.serviceName ?? process.env.OTEL_SERVICE_NAME ?? 'bullmq-diagnostics';
   const baseUrl = normalizeOtlpBaseUrl(
     options.otlpEndpoint ?? process.env.OTEL_EXPORTER_OTLP_ENDPOINT
   );
