@@ -19,9 +19,9 @@ The included experiment runs 20 jobs of 100 ms simulated work across two conditi
 | Enqueue-to-attempt age P95 | 328 ms | 1,844 ms |
 
 ### Key Takeaway
-Processing duration remains constant at approximately 100 ms under both conditions. However, under constrained concurrency, the twentieth job waits behind 19 jobs, approximately 1.9 seconds under idealized sequential processing ($19 \times 100\text{ ms} = 1.9\text{ s}$), while the complete 20-job batch takes approximately 2 seconds to drain. The observed P95 queue wait age of 1,844 ms reflects this queue backlog delay.
+Processing duration remains constant at approximately 100 ms under both conditions. At concurrency 1, the twentieth job waits behind the previous 19 jobs (approximately 1.9 seconds under idealized sequential processing: $19 \times 100\text{ ms} = 1.9\text{ s}$). The complete batch of 20 jobs takes approximately 2 seconds to drain. The observed P95 queue wait age of 1,844 ms reflects this backlog delay.
 
-A monitoring dashboard that only plots `bullmq.job.duration` would show healthy 100 ms execution times while users experience multi-second delays. Plotting `job_age_at_attempt_ms` reveals the queue backlog immediately.
+A monitoring dashboard that only plots `bullmq.job.duration` shows healthy 100 ms execution times while users experience multi-second delays. Plotting `job_age_at_attempt_ms` reveals the queue backlog immediately.
 
 ---
 
@@ -31,6 +31,7 @@ A monitoring dashboard that only plots `bullmq.job.duration` would show healthy 
 - **Node.js**: `24.21.0` (see [`.nvmrc`](.nvmrc))
 - **Docker**: For running Redis
 - **SigNoz**: Either [SigNoz Cloud](https://signoz.io/docs/ingestion/signoz-cloud/overview/) or a [local Docker installation](https://signoz.io/docs/install/docker/)
+- **Environment**: Verified on Linux. On Windows, run the project in WSL2 rather than native Command Prompt or PowerShell.
 
 ### 1. Setup Environment & Redis
 
@@ -144,9 +145,9 @@ The API responds with HTTP `202 Accepted` and the created job IDs:
 | Field | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `scenario` | string | `'success'` | One of `'success'`, `'transient-retry'`, `'exhausted-failure'`, or `'slow-worker'`. |
-| `count` | integer (1–100) | `1` | Number of jobs to enqueue in bulk. |
-| `simulatedWorkMs` | integer (1–10,000) | `100` (`2000` for slow-worker) | Simulated task processing time. |
-| `backoffDelayMs` | integer (1–60,000) | `1500` | Base delay for exponential retry backoff. |
+| `count` | integer (1-100) | `1` | Number of jobs to enqueue in bulk. |
+| `simulatedWorkMs` | integer (1-10000) | `100` (`2000` for slow-worker) | Simulated task processing time. |
+| `backoffDelayMs` | integer (1-60000) | `1500` | Base delay for exponential retry backoff. |
 | `runId` | string (max 128 chars) | `run_<timestamp>` | Grouping identifier attached to spans. |
 
 Payloads larger than 16 KB return `413 Payload Too Large`.
@@ -160,15 +161,15 @@ All configuration is managed via environment variables (or `.env`):
 | Variable | Default | Description |
 | :--- | :--- | :--- |
 | `PORT` | `3000` | Express API listener port. |
-| `HOST` | `0.0.0.0` | API bind address. |
+| `HOST` | `127.0.0.1` | API bind address (`127.0.0.1` limits access to localhost). |
 | `REDIS_URL` | `redis://localhost:6379` | Redis connection URL. |
-| `WORKER_CONCURRENCY` | `5` | BullMQ worker concurrency (1–50). |
+| `WORKER_CONCURRENCY` | `5` | BullMQ worker concurrency (1-50). |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4318` | Base URL for OTLP/HTTP export. |
 | `OTEL_EXPORTER_OTLP_HEADERS` | *empty* | Comma-separated headers (e.g. `signoz-ingestion-key=...`). |
 | `OTEL_EXPORTER_OTLP_TIMEOUT` | `5000` | Exporter timeout in ms before dropping telemetry on shutdown. |
 
 > [!WARNING]
-> **Diagnostic Demonstration Notice**: This repository is designed as a local diagnostic harness, not a production-hardened service. The Express API binds to `0.0.0.0` without authentication or rate limiting. Do not expose this service directly to the public internet. Production deployments require appropriate authentication, reverse-proxy termination, rate limiting, and network access controls.
+> **Diagnostic Demonstration Notice**: This repository is designed as a local diagnostic harness, not a production-hardened service. The Express API binds to `127.0.0.1` by default. Changing `HOST` to `0.0.0.0` exposes the unauthenticated API to other machines on the network. Production deployments require appropriate authentication, reverse-proxy termination, rate limiting, and network access controls.
 
 ---
 

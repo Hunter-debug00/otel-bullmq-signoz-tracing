@@ -2,7 +2,7 @@
   "name": "otel-bullmq-signoz-tracing",
   "version": "1.0.0",
   "description": "BullMQ OpenTelemetry instrumentation demonstrating enqueue-to-attempt job age metrics and distributed tracing in SigNoz",
-  "author": "Hunter <huntertenacious@gmail.com>",
+  "author": "Hunter",
   "private": true,
   "scripts": {
     "build": "tsc -p tsconfig.json",

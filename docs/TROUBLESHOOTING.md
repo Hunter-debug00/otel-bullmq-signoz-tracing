@@ -65,7 +65,7 @@ Follow this diagnostic sequence to isolate where the telemetry pipeline is broke
 - **Check**: Wait 15 seconds after sending job traffic.
 - **Expected Result**: The OpenTelemetry metric reader flushes metrics every 5,000 ms (`exportIntervalMillis: 5000`).
 - **Likely Cause**: Normal periodic export batching delay.
-- **Next Action**: Dispatch traffic using `npm run scenarios` and wait at least two export cycles (10–15 s) before querying dashboard panels.
+- **Next Action**: Dispatch traffic using `npm run scenarios` and wait at least two export cycles (10-15 seconds) before querying dashboard panels.
 
 ---
 
